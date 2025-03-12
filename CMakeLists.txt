@@ -16,12 +16,21 @@ FetchContent_Declare(
     GIT_TAG "5.5"
     GIT_PROGRESS TRUE
 )
-FetchContent_MakeAvailable(raylib)
+set(ZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    zmq
+    GIT_REPOSITORY "https://github.com/zeromq/libzmq.git"
+    GIT_TAG "v4.3.5"
+    GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(raylib zmq)
+
+find_package(Threads REQUIRED)
 
 # Resources path
 set(RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
 # Build our examples
 add_executable(raster src/raster.c)
-target_link_libraries(raster PRIVATE raylib)
+target_link_libraries(raster PRIVATE raylib zmq Threads::Threads)
 target_compile_definitions(raster PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
