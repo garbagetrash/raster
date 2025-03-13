@@ -8,18 +8,15 @@ Options
 -------
 
 - `s` Starts a thread to push data via ZMQ to raster plot for testing.
-- `w` Set raster plot width in pixels.
-- `h` Set raster plot height in pixels.
-- `c` Set raster plot colormap. { "inferno" (default), "viridis", "turbo" }.
+- `c` Set raster plot colormap. { "inferno" (default), "viridis", "turbo", "grey" }.
 
 ### Example
 
 ```sh
-$ ./raster -s -w 320 -h 640
+$ ./raster -s -c viridis
 ```
 
 TODO
 ----
 
-- Cursor crosshair with (x, y) labels and picker.
 - Zoombox support.
