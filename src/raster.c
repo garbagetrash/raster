@@ -1,3 +1,5 @@
+#include <float.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +8,10 @@
 
 #include "raylib.h"
 #include "zmq.h"
+#include "grayscale_colormap.h"
+#include "inferno_colormap.h"
+#include "viridis_colormap.h"
+#include "turbo_colormap.h"
 
 
 const char* channel = "ipc:///dev/shm/ipc";
@@ -23,6 +29,8 @@ void get_path(const char* filename, char* pathname)
 typedef struct Raster {
     int width;
     int height;
+    float min_value;
+    float max_value;
     int yidx;
     Color* pixels;
 } Raster;
@@ -47,6 +55,8 @@ Raster new_raster(int width, int height)
     Raster r = {
         .width = width,   
         .height = height,   
+        .min_value = FLT_MAX,
+        .max_value = FLT_MIN,
         .yidx = 0,   
         .pixels = pixels
     };
@@ -54,19 +64,53 @@ Raster new_raster(int width, int height)
 }
 
 // Updates `pixels` by pushing a horizontal line of width pixels
-void push_line(const Color* line_of_pixels, Raster* raster)
+void push_line(const float* line_of_pixels, Raster* raster, float* colormap)
 {
     int idx;
     int buffer_size = 2 * raster->width * raster->height;
     for (int x = 0; x < raster->width; x++)
     {
+        float value = line_of_pixels[x];
+        if (value > raster->max_value)
+        {
+            raster->max_value = value;
+        }
+        if (value < raster->min_value)
+        {
+            raster->min_value = value;
+        }
+    }
+
+    float range = raster->max_value - raster->min_value;
+    for (int x = 0; x < raster->width; x++)
+    {
+        float value = line_of_pixels[x];
+        // Apply colormap here
+        int idx = (int)(255.0 * ((value - raster->min_value) / (range + 1e-6)));
+        Color c = {
+            255 * colormap[3 * idx],
+            255 * colormap[3 * idx + 1],
+            255 * colormap[3 * idx + 2],
+            255
+        };
         idx = (raster->yidx * raster->width + x) % buffer_size;
-        raster->pixels[idx] = line_of_pixels[x];
+        raster->pixels[idx] = c;
         idx = ((raster->yidx + raster->height) * raster->width + x) % buffer_size;
-        raster->pixels[idx] = line_of_pixels[x];
+        raster->pixels[idx] = c;
     }
     (raster->yidx)++;
     raster->yidx %= raster->height;
+}
+
+// Converges to N(0, 1)
+float randn(int n)
+{
+    float output = 0.0f;
+    for (size_t i = 0; i < n; i++)
+    {
+        output += ((float)rand() / RAND_MAX);
+    }
+    return sqrtf(12.0f * n) * (output - 0.5f);
 }
 
 void* simulated_input_thread(void* arg)
@@ -85,15 +129,12 @@ void* simulated_input_thread(void* arg)
     float* buffer = (float*)calloc(sizeof(float), buffer_size);
 
     // Loop forever on sending some data
-    int cntr = 0;
     while (1)
     {
         for (int i = 0; i < buffer_size; i++)
         {
-            buffer[i] = (float)cntr;
+            buffer[i] = -abs((buffer_size / 2.0f) - i) + randn(10);
         }
-        cntr++;
-        cntr %= 256;
 
         if (zmq_send(publisher, buffer, sizeof(float) * buffer_size, 0) == -1)
         {
@@ -120,8 +161,9 @@ int main(int argc, char *argv[])
     int height = 800;
     bool simulated_input = false;
     int c;
+    float* colormap = (float*)inferno_srgb_floats;
 
-    while ((c = getopt(argc, argv, "sh:w:")) != -1)
+    while ((c = getopt(argc, argv, "sh:w:c:")) != -1)
     {
         switch (c)
         {
@@ -133,6 +175,20 @@ int main(int argc, char *argv[])
                 break;
             case 'w':
                 width = atoi(optarg);
+                break;
+            case 'c':
+                char* color_choice = optarg;
+                if (strncmp(color_choice, "inferno", 7) == 0) {
+                    colormap = (float*)inferno_srgb_floats;
+                } else if (strncmp(color_choice, "viridis", 7) == 0) {
+                    colormap = (float*)viridis_srgb_floats;
+                } else if (strncmp(color_choice, "turbo", 5) == 0) {
+                    colormap = (float*)turbo_srgb_floats;
+                } else if (strncmp(color_choice, "gray", 4) == 0) {
+                    colormap = (float*)grayscale_srgb_floats;
+                } else if (strncmp(color_choice, "grey", 4) == 0) {
+                    colormap = (float*)grayscale_srgb_floats;
+                }
                 break;
             default:
                 abort();
@@ -197,13 +253,8 @@ int main(int argc, char *argv[])
                 break;
             }
 
-            // TODO: Apply colormap here to go from float -> Color.
-            for (int i = 0; i < raster.width; i++)
-            {
-                line_of_pixels[i] = (Color) { buffer[i], buffer[i], buffer[i], 255 };
-            }
-
-            push_line(line_of_pixels, &raster);
+            // This also applies colormap
+            push_line(buffer, &raster, colormap);
         }
 
         // Render all the data we have

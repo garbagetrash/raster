@@ -32,5 +32,9 @@ set(RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
 # Build our examples
 add_executable(raster src/raster.c)
+target_include_directories(raster PRIVATE include)
 target_link_libraries(raster PRIVATE raylib zmq Threads::Threads)
 target_compile_definitions(raster PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
+
+target_compile_options(raster PRIVATE $<$<CONFIG:Debug>:-fno-omit-frame-pointer -fsanitize=address>)
+target_link_options(raster PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
