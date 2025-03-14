@@ -159,6 +159,8 @@ void* simulated_input_thread()
     free(buffer);
     zmq_close(publisher);
     zmq_ctx_destroy(context);
+
+    return NULL;
 }
 
 int main(int argc, char *argv[])
