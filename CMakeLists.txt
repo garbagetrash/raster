@@ -18,12 +18,14 @@ FetchContent_Declare(
 )
 set(ZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
-    zmq
+    ZeroMQ
     GIT_REPOSITORY "https://github.com/zeromq/libzmq.git"
     GIT_TAG "v4.3.5"
     GIT_PROGRESS TRUE
 )
-FetchContent_MakeAvailable(raylib zmq)
+FetchContent_MakeAvailable(raylib ZeroMQ)
+
+message("ZMQ: ${ZeroMQ_SOURCE_DIR}")
 
 find_package(Threads REQUIRED)
 
@@ -32,8 +34,8 @@ set(RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
 # Build our examples
 add_executable(raster src/raster.c)
-target_include_directories(raster PRIVATE include)
-target_link_libraries(raster PRIVATE raylib zmq Threads::Threads)
+target_include_directories(raster PRIVATE include ${ZeroMQ_SOURCE_DIR}/include)
+target_link_libraries(raster PRIVATE raylib libzmq Threads::Threads)
 target_compile_definitions(raster PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
 
 target_compile_options(raster PRIVATE $<$<CONFIG:Debug>:-fno-omit-frame-pointer -fsanitize=address>)

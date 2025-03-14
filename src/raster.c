@@ -14,7 +14,7 @@
 #include "turbo_colormap.h"
 
 
-const char* channel = "ipc:///dev/shm/ipc";
+const char* channel = "ipc://ipc";
 int width = 480;
 int height = 640;
 
@@ -139,7 +139,7 @@ void* simulated_input_thread()
     {
         for (int i = 0; i < width; i++)
         {
-            buffer[i] = -abs((width / 2.0f) - i) + randn(20);
+            buffer[i] = -fabsf((width / 2.0f) - i) + randn(20);
         }
 
         if (zmq_send(publisher, buffer, sizeof(float) * width, 0) == -1)
@@ -167,6 +167,7 @@ int main(int argc, char *argv[])
     bool simulated_input = false;
     int c;
     float* colormap = (float*)inferno_srgb_floats;
+    char* color_choice = NULL;
 
     while ((c = getopt(argc, argv, "sh:w:c:")) != -1)
     {
@@ -176,7 +177,7 @@ int main(int argc, char *argv[])
                 simulated_input = true;
                 break;
             case 'c':
-                char* color_choice = optarg;
+                color_choice = optarg;
                 if (strncmp(color_choice, "inferno", 7) == 0) {
                     colormap = (float*)inferno_srgb_floats;
                 } else if (strncmp(color_choice, "viridis", 7) == 0) {
@@ -308,8 +309,8 @@ int main(int argc, char *argv[])
                 min(click_start.y, mouse_pos.y),
             };
             Vector2 size = {
-                abs(click_start.x - mouse_pos.x),
-                abs(click_start.y - mouse_pos.y),
+                fabsf(click_start.x - mouse_pos.x),
+                fabsf(click_start.y - mouse_pos.y),
             };
             Rectangle select = { start.x, start.y, size.x, size.y };
             DrawRectangleRec(select, Fade(WHITE, 0.35f));
