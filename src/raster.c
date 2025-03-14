@@ -29,7 +29,7 @@ void get_path(const char* filename, char* pathname)
 {
     char *dir = RESOURCES_DIR;
     printf("dir: %s\n", dir);
-    sprintf(pathname, "%s/%s", dir, filename);
+    snprintf(pathname, 512, "%s/%s", dir, filename);
     printf("path: %s\n", pathname);
 }
 
@@ -318,16 +318,16 @@ int main(int argc, char *argv[])
             DrawRectangleRec(select, Fade(WHITE, 0.35f));
             DrawRectangleLinesEx(select, 1.0, YELLOW);
             char start_text[20];
-            sprintf(start_text, "(%d, %d)", (int)click_start.x, (int)click_start.y);
+            snprintf(start_text, 20, "(%d, %d)", (int)click_start.x, (int)click_start.y);
             DrawText(start_text, (int)click_start.x + 5, (int)click_start.y - 15, 10, YELLOW);
             char mouse_text[20];
-            sprintf(mouse_text, "(%d, %d)", (int)mouse_pos.x, (int)mouse_pos.y);
+            snprintf(mouse_text, 20, "(%d, %d)", (int)mouse_pos.x, (int)mouse_pos.y);
             DrawText(mouse_text, (int)mouse_pos.x + 5, (int)mouse_pos.y - 15, 10, YELLOW);
             char width_text[6];
-            sprintf(width_text, "%d", (int)size.x);
+            snprintf(width_text, 6, "%d", (int)size.x);
             DrawText(width_text, (int)(start.x + 0.5 * size.x - 5), (int)start.y - 15, 10, YELLOW);
             char height_text[6];
-            sprintf(height_text, "%d", (int)size.y);
+            snprintf(height_text, 6, "%d", (int)size.y);
             DrawText(height_text, (int)start.x - 30, (int)(start.y + 0.5 * size.y - 5), 10, YELLOW);
         } else {
             // Mouse crosshair
@@ -336,21 +336,21 @@ int main(int argc, char *argv[])
             if ((width - mouse_pos.x) < 40) {
                 // Close to right edge
                 char xpos[10];
-                sprintf(xpos, "X: %i", (int)(mouse_pos.x));
+                snprintf(xpos, 10, "X: %i", (int)(mouse_pos.x));
                 DrawText(xpos, (int)mouse_pos.x - 40, height - 10, 10, YELLOW);
             } else {
                 char xpos[10];
-                sprintf(xpos, "X: %i", (int)(mouse_pos.x));
+                snprintf(xpos, 10, "X: %i", (int)(mouse_pos.x));
                 DrawText(xpos, (int)mouse_pos.x + 5, height - 10, 10, YELLOW);
             }
             if ((height - mouse_pos.y) < 20) {
                 // Close to bottom edge
                 char ypos[10];
-                sprintf(ypos, "Y: %i", (int)(mouse_pos.y));
+                snprintf(ypos, 10, "Y: %i", (int)(mouse_pos.y));
                 DrawText(ypos, 5, (int)mouse_pos.y - 15, 10, YELLOW);
             } else {
                 char ypos[10];
-                sprintf(ypos, "Y: %i", (int)(mouse_pos.y));
+                snprintf(ypos, 10, "Y: %i", (int)(mouse_pos.y));
                 DrawText(ypos, 5, (int)mouse_pos.y + 5, 10, YELLOW);
             }
         }
