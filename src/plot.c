@@ -33,81 +33,53 @@ void get_path(const char* filename, char* pathname)
     printf("path: %s\n", pathname);
 }
 
-typedef struct Raster {
-    int width;
-    int height;
+typedef struct Plot {
+    uint32_t npoints;
     float min_value;
     float max_value;
-    int yidx;
-    Color* pixels;
-} Raster;
+    float* points;
+} Plot;
 
 // Allocates Color*, up to user to free
-Raster new_raster(int width, int height)
+Plot new_plot(uint32_t npoints)
 {
-    int buffer_size = width * height;
-    Color* pixels = (Color*)calloc(sizeof(Color), buffer_size);
-    int idx;
-    for (int y = 0; y < height; y++)
+    float* points = (float*)calloc(sizeof(float), npoints);
+    for (int i = 0; i < npoints; i++)
     {
-        for (int x = 0; x < width; x++)
-        {
-            idx = (y + width + x) % buffer_size;
-            pixels[idx] = BLACK;
-        }
+        points[i] = 0.0;
     }
 
-    Raster r = {
-        .width = width,   
-        .height = height,   
+    Plot p = {
+        .npoints = npoints,
         .min_value = FLT_MAX,
         .max_value = FLT_MIN,
-        .yidx = 0,   
-        .pixels = pixels
+        .points = points
     };
-    return r;
+    return p;
 }
 
-void free_raster(Raster* r)
+void free_plot(Plot* p)
 {
-    free(r->pixels);
+    free(p->points);
 }
 
-// Updates `pixels` by pushing a horizontal line of width pixels
-void push_line(const float* line_of_pixels, Raster* raster, float* colormap)
+void push_line(const float* new_points, Plot* plot)
 {
-    int idx;
-    int buffer_size = raster->width * raster->height;
-    for (int x = 0; x < raster->width; x++)
+    for (int i = 0; i < plot->npoints; i++)
     {
-        float value = line_of_pixels[x];
-        if (value > raster->max_value)
+        float value = new_points[i];
+        if (value > plot->max_value)
         {
-            raster->max_value = value;
+            plot->max_value = value;
         }
-        if (value < raster->min_value)
+        if (value < plot->min_value)
         {
-            raster->min_value = value;
+            plot->min_value = value;
         }
     }
 
-    float range = raster->max_value - raster->min_value;
-    for (int x = 0; x < raster->width; x++)
-    {
-        float value = line_of_pixels[x];
-        // Apply colormap here
-        int idx = (int)(230.0 * ((value - raster->min_value) / (range + 1e-6)));
-        Color c = {
-            255 * colormap[3 * idx],
-            255 * colormap[3 * idx + 1],
-            255 * colormap[3 * idx + 2],
-            255
-        };
-        idx = (raster->yidx * raster->width + x);
-        raster->pixels[idx] = c;
-    }
-    (raster->yidx)++;
-    raster->yidx %= raster->height;
+    float range = plot->max_value - plot->min_value;
+    memcpy(plot->points, new_points, plot->npoints);
 }
 
 // Box-Muller
@@ -165,29 +137,13 @@ int main(int argc, char *argv[])
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     bool simulated_input = false;
     int c;
-    float* colormap = (float*)inferno_srgb_floats;
-    char* color_choice = NULL;
 
-    while ((c = getopt(argc, argv, "sh:w:c:")) != -1)
+    while ((c = getopt(argc, argv, "s")) != -1)
     {
         switch (c)
         {
             case 's':
                 simulated_input = true;
-                break;
-            case 'c':
-                color_choice = optarg;
-                if (strncmp(color_choice, "inferno", 7) == 0) {
-                    colormap = (float*)inferno_srgb_floats;
-                } else if (strncmp(color_choice, "viridis", 7) == 0) {
-                    colormap = (float*)viridis_srgb_floats;
-                } else if (strncmp(color_choice, "turbo", 5) == 0) {
-                    colormap = (float*)turbo_srgb_floats;
-                } else if (strncmp(color_choice, "gray", 4) == 0) {
-                    colormap = (float*)grayscale_srgb_floats;
-                } else if (strncmp(color_choice, "grey", 4) == 0) {
-                    colormap = (float*)grayscale_srgb_floats;
-                }
                 break;
             default:
                 abort();
@@ -223,16 +179,16 @@ int main(int argc, char *argv[])
     }
 
     // Now set up our GUI
-    InitWindow(width, height, "Raster");
+    InitWindow(width, height, "Plot");
     width = GetScreenWidth();
     height = GetScreenHeight();
-    Raster raster = new_raster(width, height);
+    Plot plot = new_plot(width);
     SetTargetFPS(60);
 
     float* buffer = (float*)calloc(sizeof(float), width);
 
     RenderTexture2D rtex = LoadRenderTexture(width, height);
-    Color* line_of_pixels = (Color*)calloc(sizeof(Color), raster.width);
+    float* new_points = (float*)calloc(sizeof(float), plot.npoints);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
@@ -246,13 +202,13 @@ int main(int argc, char *argv[])
             width = GetScreenWidth();
             height = GetScreenHeight();
 
-            free_raster(&raster);
-            raster = new_raster(width, height);
+            free_plot(&plot);
+            plot = new_plot(width);
 
             rtex = LoadRenderTexture(width, height);
 
-            free(line_of_pixels);
-            line_of_pixels = (Color*)calloc(sizeof(Color), raster.width);
+            free(new_points);
+            new_points = (float*)calloc(sizeof(float), plot.npoints);
 
             free(buffer);
             buffer = (float*)calloc(sizeof(float), width);
@@ -274,12 +230,12 @@ int main(int argc, char *argv[])
             }
 
             // This also applies colormap
-            push_line(buffer, &raster, colormap);
+            push_line(buffer, &plot);
         }
 
-        // Render all the data we have
-        Color* pixels = raster.pixels;
-        UpdateTexture(rtex.texture, pixels);
+        // TODO: Render all the data we have to a texture?
+        //Color* pixels = plot.pixels;
+        //UpdateTexture(rtex.texture, pixels);
 
         Vector2 mouse_pos = GetMousePosition();
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -297,9 +253,8 @@ int main(int argc, char *argv[])
 
         ClearBackground(BLACK);
 
-        // Actual raster
-        DrawTexture(rtex.texture, 0, 0, WHITE);
-        DrawLine(0, raster.yidx, width, raster.yidx, YELLOW);
+        // TODO: Actual plot
+        //DrawTexture(rtex.texture, 0, 0, WHITE);
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             // Draw rectangle for select box
@@ -374,8 +329,8 @@ int main(int argc, char *argv[])
             return -1;
         }
     }
-    free(line_of_pixels);
-    free_raster(&raster);
+    free(new_points);
+    free_plot(&plot);
     UnloadRenderTexture(rtex);
     CloseWindow();
     free(buffer);
