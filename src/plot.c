@@ -8,6 +8,7 @@
 
 #include "raylib.h"
 #include "zmq.h"
+#include "common.h"
 #include "grayscale_colormap.h"
 #include "inferno_colormap.h"
 #include "viridis_colormap.h"
@@ -19,75 +20,65 @@ int width = 480;
 int height = 640;
 
 
-float min(float x, float y)
-{
-    if (x < y) return x;
-    else return y;
-}
-
-void get_path(const char* filename, char* pathname)
-{
-    char *dir = RESOURCES_DIR;
-    printf("dir: %s\n", dir);
-    snprintf(pathname, 512, "%s/%s", dir, filename);
-    printf("path: %s\n", pathname);
-}
-
 typedef struct Plot {
-    uint32_t npoints;
     float min_value;
     float max_value;
-    float* points;
+    int32_t npoints;
+    Vector2* points;
 } Plot;
 
 // Allocates Color*, up to user to free
 Plot new_plot(uint32_t npoints)
 {
-    float* points = (float*)calloc(sizeof(float), npoints);
-    for (int i = 0; i < npoints; i++)
-    {
-        points[i] = 0.0;
-    }
-
+    Vector2* buffer = (Vector2*)calloc(sizeof(Vector2), npoints);
     Plot p = {
-        .npoints = npoints,
         .min_value = FLT_MAX,
         .max_value = FLT_MIN,
-        .points = points
+        .npoints = npoints,
+        .points = buffer
     };
     return p;
 }
 
 void free_plot(Plot* p)
 {
-    free(p->points);
+    if (p->points != NULL)
+    {
+        free(p->points);
+    }
 }
 
-void push_line(const float* new_points, Plot* plot)
+// Shallow copy, just passing the pointer along.
+void update_plot(float* points, uint64_t npoints, Plot* plot)
 {
+    plot->npoints = npoints;
+    float dx = (float)width / (plot->npoints - 1);
+
+    // Update plot range
     for (int i = 0; i < plot->npoints; i++)
     {
-        float value = new_points[i];
-        if (value > plot->max_value)
+        float y = points[i];
+        if (y > plot->max_value)
         {
-            plot->max_value = value;
+            plot->max_value = y;
         }
-        if (value < plot->min_value)
+        if (y < plot->min_value)
         {
-            plot->min_value = value;
+            plot->min_value = y;
         }
     }
 
-    float range = plot->max_value - plot->min_value;
-    memcpy(plot->points, new_points, plot->npoints);
-}
+    float x = 0.0f;
+    float range = plot->max_value - plot->min_value + 1e-6;
+    for (int i = 0; i < plot->npoints; i++)
+    {
+        // Map each point onto logical space [0, 1.0)
+        float y = (points[i] - plot->min_value) / range;
 
-// Box-Muller
-float randn()
-{
-    float u1 = ((float)rand() / RAND_MAX);
-    float u2 = ((float)rand() / RAND_MAX);
-    return sqrtf(-2 * log(u1)) * cos(2 * M_PI * u2);
+        Vector2 xy = { x, (1.0f - y) * height };
+        plot->points[i] = xy;
+        x += dx;
+    }
 }
 
 void* simulated_input_thread()
@@ -185,10 +176,9 @@ int main(int argc, char *argv[])
     Plot plot = new_plot(width);
     SetTargetFPS(60);
 
-    float* buffer = (float*)calloc(sizeof(float), width);
+    float* points_buffer = (float*)calloc(sizeof(float), width);
 
     RenderTexture2D rtex = LoadRenderTexture(width, height);
-    float* new_points = (float*)calloc(sizeof(float), plot.npoints);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
@@ -205,19 +195,18 @@ int main(int argc, char *argv[])
             free_plot(&plot);
             plot = new_plot(width);
 
+            free(points_buffer);
+            points_buffer = (float*)calloc(sizeof(float), width);
+
             rtex = LoadRenderTexture(width, height);
-
-            free(new_points);
-            new_points = (float*)calloc(sizeof(float), plot.npoints);
-
-            free(buffer);
-            buffer = (float*)calloc(sizeof(float), width);
         }
 
+        int nbytes = 0;
         while (1)
         {
             // Receive all queued up data and push to Raster before rendering frame
-            if (zmq_recv(subscriber, buffer, sizeof(float) * width, ZMQ_DONTWAIT) == -1)
+            nbytes = zmq_recv(subscriber, points_buffer, sizeof(float) * width, ZMQ_DONTWAIT);
+            if (nbytes == -1)
             {
                 // If we don't have data don't block or bail, just allow loop to go
                 // along so UI remains responsive.
@@ -227,10 +216,14 @@ int main(int argc, char *argv[])
                     return -1;
                 }
                 break;
+            } else if (nbytes > sizeof(float) * width) {
+                // Received data got truncated down to buffer size
+                nbytes = sizeof(float) * width;
             }
 
-            // This also applies colormap
-            push_line(buffer, &plot);
+            // Only draw the most recent line
+            uint64_t npoints = nbytes / sizeof(float);
+            update_plot(points_buffer, npoints, &plot);
         }
 
         // TODO: Render all the data we have to a texture?
@@ -253,8 +246,8 @@ int main(int argc, char *argv[])
 
         ClearBackground(BLACK);
 
-        // TODO: Actual plot
-        //DrawTexture(rtex.texture, 0, 0, WHITE);
+        // Actual plot
+        DrawLineStrip(plot.points, plot.npoints, WHITE);
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             // Draw rectangle for select box
@@ -283,28 +276,7 @@ int main(int argc, char *argv[])
             DrawText(height_text, (int)start.x - 30, (int)(start.y + 0.5 * size.y - 5), 10, YELLOW);
         } else {
             // Mouse crosshair
-            DrawLine(0, mouse_pos.y, width, mouse_pos.y, YELLOW);
-            DrawLine(mouse_pos.x, 0, mouse_pos.x, height, YELLOW);
-            if ((width - mouse_pos.x) < 40) {
-                // Close to right edge
-                char xpos[10];
-                snprintf(xpos, 10, "X: %i", (int)(mouse_pos.x));
-                DrawText(xpos, (int)mouse_pos.x - 40, height - 10, 10, YELLOW);
-            } else {
-                char xpos[10];
-                snprintf(xpos, 10, "X: %i", (int)(mouse_pos.x));
-                DrawText(xpos, (int)mouse_pos.x + 5, height - 10, 10, YELLOW);
-            }
-            if ((height - mouse_pos.y) < 20) {
-                // Close to bottom edge
-                char ypos[10];
-                snprintf(ypos, 10, "Y: %i", (int)(mouse_pos.y));
-                DrawText(ypos, 5, (int)mouse_pos.y - 15, 10, YELLOW);
-            } else {
-                char ypos[10];
-                snprintf(ypos, 10, "Y: %i", (int)(mouse_pos.y));
-                DrawText(ypos, 5, (int)mouse_pos.y + 5, 10, YELLOW);
-            }
+            draw_mouse_crosshair(mouse_pos, width, height);
         }
 
         // Info panel
@@ -329,11 +301,10 @@ int main(int argc, char *argv[])
             return -1;
         }
     }
-    free(new_points);
+    free(points_buffer);
     free_plot(&plot);
     UnloadRenderTexture(rtex);
     CloseWindow();
-    free(buffer);
     zmq_close(subscriber);
     zmq_ctx_destroy(context);
     unlink("/dev/shm/ipc");

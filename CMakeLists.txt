@@ -33,14 +33,14 @@ find_package(Threads REQUIRED)
 set(RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
 # Build our examples
-add_executable(raster src/raster.c)
+add_executable(raster src/raster.c src/common.c)
 target_include_directories(raster PRIVATE include ${ZeroMQ_SOURCE_DIR}/include)
 target_link_libraries(raster PRIVATE raylib libzmq Threads::Threads)
 target_compile_definitions(raster PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
 target_compile_options(raster PRIVATE $<$<CONFIG:Debug>:-fno-omit-frame-pointer -fsanitize=address>)
 target_link_options(raster PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
 
-add_executable(plot src/plot.c)
+add_executable(plot src/plot.c src/common.c)
 target_include_directories(plot PRIVATE include ${ZeroMQ_SOURCE_DIR}/include)
 target_link_libraries(plot PRIVATE raylib libzmq Threads::Threads)
 target_compile_definitions(plot PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
