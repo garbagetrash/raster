@@ -16,8 +16,14 @@
 
 
 const char* channel = "ipc://ipc";
-int width = 480;
-int height = 640;
+Screen screen = {
+    .width = 640,
+    .height = 480,
+    .logical_width = 1.0f,
+    .logical_height = 1.0f,
+    .logical_minx = -0.5f,
+    .logical_miny = 0.0f,
+};
 
 
 typedef struct Plot {
@@ -52,7 +58,7 @@ void free_plot(Plot* p)
 void update_plot(float* points, uint64_t npoints, Plot* plot)
 {
     plot->npoints = npoints;
-    float dx = (float)width / (plot->npoints - 1);
+    float dx = (float)screen.width / (plot->npoints - 1);
 
     // Update plot range
     for (int i = 0; i < plot->npoints; i++)
@@ -75,7 +81,7 @@ void update_plot(float* points, uint64_t npoints, Plot* plot)
         // Map each point onto logical space [0, 1.0)
         float y = (points[i] - plot->min_value) / range;
 
-        Vector2 xy = { x, (1.0f - y) * height };
+        Vector2 xy = { x, (1.0f - y) * screen.height };
         plot->points[i] = xy;
         x += dx;
     }
@@ -97,12 +103,12 @@ void* simulated_input_thread()
     // Loop forever on sending some data
     while (1)
     {
-        for (int i = 0; i < width; i++)
+        for (int i = 0; i < screen.width; i++)
         {
-            buffer[i] = -fabsf((width / 2.0f) - i) + randn();
+            buffer[i] = -fabsf((screen.width / 2.0f) - i) + randn();
         }
 
-        if (zmq_send(publisher, buffer, sizeof(float) * width, 0) == -1)
+        if (zmq_send(publisher, buffer, sizeof(float) * screen.width, 0) == -1)
         {
             perror("zmq_send");
             break;
@@ -170,15 +176,15 @@ int main(int argc, char *argv[])
     }
 
     // Now set up our GUI
-    InitWindow(width, height, "Plot");
-    width = GetScreenWidth();
-    height = GetScreenHeight();
-    Plot plot = new_plot(width);
+    InitWindow(screen.width, screen.height, "Plot");
+    screen.width = GetScreenWidth();
+    screen.height = GetScreenHeight();
+    Plot plot = new_plot(screen.width);
     SetTargetFPS(60);
 
-    float* points_buffer = (float*)calloc(sizeof(float), width);
+    float* points_buffer = (float*)calloc(sizeof(float), screen.width);
 
-    RenderTexture2D rtex = LoadRenderTexture(width, height);
+    RenderTexture2D rtex = LoadRenderTexture(screen.width, screen.height);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
@@ -189,23 +195,23 @@ int main(int argc, char *argv[])
         if (IsWindowResized())
         {
             // Window resized, so reset width/height
-            width = GetScreenWidth();
-            height = GetScreenHeight();
+            screen.width = GetScreenWidth();
+            screen.height = GetScreenHeight();
 
             free_plot(&plot);
-            plot = new_plot(width);
+            plot = new_plot(screen.width);
 
             free(points_buffer);
-            points_buffer = (float*)calloc(sizeof(float), width);
+            points_buffer = (float*)calloc(sizeof(float), screen.width);
 
-            rtex = LoadRenderTexture(width, height);
+            rtex = LoadRenderTexture(screen.width, screen.height);
         }
 
         int nbytes = 0;
         while (1)
         {
             // Receive all queued up data and push to Raster before rendering frame
-            nbytes = zmq_recv(subscriber, points_buffer, sizeof(float) * width, ZMQ_DONTWAIT);
+            nbytes = zmq_recv(subscriber, points_buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT);
             if (nbytes == -1)
             {
                 // If we don't have data don't block or bail, just allow loop to go
@@ -216,9 +222,9 @@ int main(int argc, char *argv[])
                     return -1;
                 }
                 break;
-            } else if (nbytes > sizeof(float) * width) {
+            } else if (nbytes > sizeof(float) * screen.width) {
                 // Received data got truncated down to buffer size
-                nbytes = sizeof(float) * width;
+                nbytes = sizeof(float) * screen.width;
             }
 
             // Only draw the most recent line
@@ -251,38 +257,16 @@ int main(int argc, char *argv[])
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             // Draw rectangle for select box
-            Vector2 start = {
-                min(click_start.x, mouse_pos.x),
-                min(click_start.y, mouse_pos.y),
-            };
-            Vector2 size = {
-                fabsf(click_start.x - mouse_pos.x),
-                fabsf(click_start.y - mouse_pos.y),
-            };
-            Rectangle select = { start.x, start.y, size.x, size.y };
-            DrawRectangleRec(select, Fade(WHITE, 0.35f));
-            DrawRectangleLinesEx(select, 1.0, YELLOW);
-            char start_text[20];
-            snprintf(start_text, 20, "(%d, %d)", (int)click_start.x, (int)click_start.y);
-            DrawText(start_text, (int)click_start.x + 5, (int)click_start.y - 15, 10, YELLOW);
-            char mouse_text[20];
-            snprintf(mouse_text, 20, "(%d, %d)", (int)mouse_pos.x, (int)mouse_pos.y);
-            DrawText(mouse_text, (int)mouse_pos.x + 5, (int)mouse_pos.y - 15, 10, YELLOW);
-            char width_text[6];
-            snprintf(width_text, 6, "%d", (int)size.x);
-            DrawText(width_text, (int)(start.x + 0.5 * size.x - 5), (int)start.y - 15, 10, YELLOW);
-            char height_text[6];
-            snprintf(height_text, 6, "%d", (int)size.y);
-            DrawText(height_text, (int)start.x - 30, (int)(start.y + 0.5 * size.y - 5), 10, YELLOW);
+            draw_mouse_drag_rectangle(click_start, mouse_pos, &screen);
         } else {
             // Mouse crosshair
-            draw_mouse_crosshair(mouse_pos, width, height);
+            draw_mouse_crosshair(mouse_pos, &screen);
         }
 
         // Info panel
-        DrawRectangle(width - 210, 0, 210, 40, Fade(WHITE, 0.7f));
-        DrawText("RASTER", width - 200, 10, 20, BLACK);
-        DrawFPS(width - 90, 10);
+        DrawRectangle(screen.width - 210, 0, 210, 40, Fade(WHITE, 0.7f));
+        DrawText("RASTER", screen.width - 200, 10, 20, BLACK);
+        DrawFPS(screen.width - 90, 10);
 
         EndDrawing();
     }
