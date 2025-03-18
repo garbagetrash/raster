@@ -26,17 +26,17 @@ Screen screen = {
 };
 
 
-typedef struct Raster {
+typedef struct Waterfall {
     int width;
     int height;
     float min_value;
     float max_value;
     int yidx;
     Color* pixels;
-} Raster;
+} Waterfall;
 
 // Allocates Color*, up to user to free
-Raster new_raster(int width, int height)
+Waterfall new_waterfall(int width, int height)
 {
     int buffer_size = width * height;
     Color* pixels = (Color*)calloc(sizeof(Color), buffer_size);
@@ -50,7 +50,7 @@ Raster new_raster(int width, int height)
         }
     }
 
-    Raster r = {
+    Waterfall r = {
         .width = width,   
         .height = height,   
         .min_value = FLT_MAX,
@@ -61,46 +61,46 @@ Raster new_raster(int width, int height)
     return r;
 }
 
-void free_raster(Raster* r)
+void free_waterfall(Waterfall* r)
 {
     free(r->pixels);
 }
 
 // Updates `pixels` by pushing a horizontal line of width pixels
-void push_line(const float* line_of_pixels, Raster* raster, float* colormap)
+void push_line(const float* line_of_pixels, Waterfall* waterfall, float* colormap)
 {
     int idx;
-    int buffer_size = raster->width * raster->height;
-    for (int x = 0; x < raster->width; x++)
+    int buffer_size = waterfall->width * waterfall->height;
+    for (int x = 0; x < waterfall->width; x++)
     {
         float value = line_of_pixels[x];
-        if (value > raster->max_value)
+        if (value > waterfall->max_value)
         {
-            raster->max_value = value;
+            waterfall->max_value = value;
         }
-        if (value < raster->min_value)
+        if (value < waterfall->min_value)
         {
-            raster->min_value = value;
+            waterfall->min_value = value;
         }
     }
 
-    float range = raster->max_value - raster->min_value;
-    for (int x = 0; x < raster->width; x++)
+    float range = waterfall->max_value - waterfall->min_value;
+    for (int x = 0; x < waterfall->width; x++)
     {
         float value = line_of_pixels[x];
         // Apply colormap here
-        int idx = (int)(230.0 * ((value - raster->min_value) / (range + 1e-6)));
+        int idx = (int)(230.0 * ((value - waterfall->min_value) / (range + 1e-6)));
         Color c = {
             255 * colormap[3 * idx],
             255 * colormap[3 * idx + 1],
             255 * colormap[3 * idx + 2],
             255
         };
-        idx = (raster->yidx * raster->width + x);
-        raster->pixels[idx] = c;
+        idx = (waterfall->yidx * waterfall->width + x);
+        waterfall->pixels[idx] = c;
     }
-    (raster->yidx)++;
-    raster->yidx %= raster->height;
+    (waterfall->yidx)++;
+    waterfall->yidx %= waterfall->height;
 }
 
 void* simulated_input_thread()
@@ -208,16 +208,16 @@ int main(int argc, char *argv[])
     }
 
     // Now set up our GUI
-    InitWindow(screen.width, screen.height, "Raster");
+    InitWindow(screen.width, screen.height, "Waterfall");
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
-    Raster raster = new_raster(screen.width, screen.height);
+    Waterfall waterfall = new_waterfall(screen.width, screen.height);
     SetTargetFPS(60);
 
     float* buffer = (float*)calloc(sizeof(float), screen.width);
 
     RenderTexture2D rtex = LoadRenderTexture(screen.width, screen.height);
-    Color* line_of_pixels = (Color*)calloc(sizeof(Color), raster.width);
+    Color* line_of_pixels = (Color*)calloc(sizeof(Color), waterfall.width);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
@@ -231,13 +231,13 @@ int main(int argc, char *argv[])
             screen.width = GetScreenWidth();
             screen.height = GetScreenHeight();
 
-            free_raster(&raster);
-            raster = new_raster(screen.width, screen.height);
+            free_waterfall(&waterfall);
+            waterfall = new_waterfall(screen.width, screen.height);
 
             rtex = LoadRenderTexture(screen.width, screen.height);
 
             free(line_of_pixels);
-            line_of_pixels = (Color*)calloc(sizeof(Color), raster.width);
+            line_of_pixels = (Color*)calloc(sizeof(Color), waterfall.width);
 
             free(buffer);
             buffer = (float*)calloc(sizeof(float), screen.width);
@@ -245,7 +245,7 @@ int main(int argc, char *argv[])
 
         while (1)
         {
-            // Receive all queued up data and push to Raster before rendering frame
+            // Receive all queued up data and push to Waterfall before rendering frame
             if (zmq_recv(subscriber, buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT) == -1)
             {
                 // If we don't have data don't block or bail, just allow loop to go
@@ -259,11 +259,11 @@ int main(int argc, char *argv[])
             }
 
             // This also applies colormap
-            push_line(buffer, &raster, colormap);
+            push_line(buffer, &waterfall, colormap);
         }
 
         // Render all the data we have
-        Color* pixels = raster.pixels;
+        Color* pixels = waterfall.pixels;
         UpdateTexture(rtex.texture, pixels);
 
         Vector2 mouse_pos = GetMousePosition();
@@ -282,9 +282,9 @@ int main(int argc, char *argv[])
 
         ClearBackground(BLACK);
 
-        // Actual raster
+        // Actual waterfall
         DrawTexture(rtex.texture, 0, 0, WHITE);
-        DrawLine(0, raster.yidx, screen.width, raster.yidx, YELLOW);
+        DrawLine(0, waterfall.yidx, screen.width, waterfall.yidx, YELLOW);
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             // Draw rectangle for select box
@@ -295,8 +295,8 @@ int main(int argc, char *argv[])
         }
 
         // Info panel
-        DrawRectangle(screen.width - 210, 0, 210, 40, Fade(WHITE, 0.7f));
-        DrawText("RASTER", screen.width - 200, 10, 20, BLACK);
+        DrawRectangle(screen.width - 250, 0, 250, 40, Fade(WHITE, 0.7f));
+        DrawText("WATERFALL", screen.width - 240, 10, 20, BLACK);
         DrawFPS(screen.width - 90, 10);
 
         EndDrawing();
@@ -317,7 +317,7 @@ int main(int argc, char *argv[])
         }
     }
     free(line_of_pixels);
-    free_raster(&raster);
+    free_waterfall(&waterfall);
     UnloadRenderTexture(rtex);
     CloseWindow();
     free(buffer);

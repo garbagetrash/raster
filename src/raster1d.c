@@ -9,16 +9,14 @@
 #include "raylib.h"
 #include "zmq.h"
 #include "common.h"
-#include "grayscale_colormap.h"
-#include "inferno_colormap.h"
-#include "viridis_colormap.h"
-#include "turbo_colormap.h"
 
 
+const int NTRACES = 64;
+const int TRACE_WIDTH = 256;
 const char* channel = "ipc://ipc";
 Screen screen = {
-    .width = 640,
-    .height = 480,
+    .width = 480,
+    .height = 640,
     .logical_width = 1.0f,
     .logical_height = 1.0f,
     .logical_minx = -0.5f,
@@ -26,64 +24,89 @@ Screen screen = {
 };
 
 
-typedef struct Plot {
+typedef struct Raster1d {
+    int ntraces;
+    int trace_width;
     float min_value;
     float max_value;
-    int32_t npoints;
-    Vector2* points;
-} Plot;
+    int tidx;
+    Vector2* traces;
+} Raster1d;
 
 // Allocates Color*, up to user to free
-Plot new_plot(uint32_t npoints)
+Raster1d new_raster1d(int ntraces, int trace_width, Screen* screen)
 {
-    Vector2* buffer = (Vector2*)calloc(sizeof(Vector2), npoints);
-    Plot p = {
+    Vector2* traces = (Vector2*)calloc(sizeof(Vector2), trace_width * ntraces);
+    int idx;
+    for (int i = 0; i < ntraces; i++)
+    {
+        for (int j = 0; j < trace_width; j++)
+        {
+            idx = trace_width * i + j;
+            Vector2 pt = { j, 0.0f };
+            traces[idx] = pt;
+        }
+    }
+
+    Raster1d r = {
+        .ntraces = ntraces,
+        .trace_width = trace_width,
         .min_value = FLT_MAX,
         .max_value = FLT_MIN,
-        .npoints = npoints,
-        .points = buffer
+        .tidx = 0,   
+        .traces = traces
     };
-    return p;
+    return r;
 }
 
-void free_plot(Plot* p)
+void free_raster1d(Raster1d* r)
 {
-    if (p->points != NULL)
-    {
-        free(p->points);
-    }
+    free(r->traces);
 }
 
-// Shallow copy, just passing the pointer along.
-void update_plot(float* points, uint64_t npoints, Plot* plot)
+// Updates `traces` by pushing a new line
+void push_trace(const float* trace, Raster1d* raster1d, Screen* screen)
 {
-    plot->npoints = npoints;
-    float dx = (float)screen.width / (plot->npoints - 1);
-
-    // Update plot range
-    for (int i = 0; i < plot->npoints; i++)
+    // Update range
+    for (int x = 0; x < raster1d->trace_width; x++)
     {
-        float y = points[i];
-        if (y > plot->max_value)
+        float value = trace[x];
+        if (value > raster1d->max_value)
         {
-            plot->max_value = y;
+            raster1d->max_value = value;
         }
-        if (y < plot->min_value)
+        if (value < raster1d->min_value)
         {
-            plot->min_value = y;
+            raster1d->min_value = value;
         }
     }
+    float range = raster1d->max_value - raster1d->min_value;
 
-    float x = 0.0f;
-    float range = plot->max_value - plot->min_value + 1e-6;
-    for (int i = 0; i < plot->npoints; i++)
+    int idx;
+    for (int x = 0; x < raster1d->trace_width; x++)
     {
-        // Map each point onto logical space [0, 1.0)
-        float y = (points[i] - plot->min_value) / range;
+        float value = trace[x];
+        // Apply colormap here
+        idx = (raster1d->tidx * raster1d->trace_width + x);
+        Vector2 pt = { x, value };
+        raster1d->traces[idx] = to_pixels(pt, screen);
+    }
+    (raster1d->tidx)++;
+    raster1d->tidx %= raster1d->ntraces;
+}
 
-        Vector2 xy = { x, (1.0f - y) * screen.height };
-        plot->points[i] = xy;
-        x += dx;
+void draw_raster1d(Raster1d* raster1d)
+{
+    float dvalue = 255.0 / raster1d->ntraces;
+    int idx = raster1d->tidx;
+    for (int i = 0; i < raster1d->ntraces; i++)
+    {
+        int value = (int)((i + 1) * dvalue);
+        //Color c = { value, value, value, 255 };
+        Color c = { 255, 255, 255, value };
+        DrawLineStrip(&(raster1d->traces[raster1d->trace_width * idx]), raster1d->trace_width, c);
+        idx++;
+        idx %= raster1d->ntraces;
     }
 }
 
@@ -103,12 +126,20 @@ void* simulated_input_thread()
     // Loop forever on sending some data
     while (1)
     {
-        for (int i = 0; i < screen.width; i++)
+        if (randn() > 1.0f)
         {
-            buffer[i] = -fabsf((screen.width / 2.0f) - i) + randn();
+            for (int i = 0; i < TRACE_WIDTH; i++)
+            {
+                buffer[i] = TRACE_WIDTH / 2.0f - fabsf((TRACE_WIDTH / 2.0f) - i) + 3.0f * randn();
+            }
+        } else {
+            for (int i = 0; i < TRACE_WIDTH; i++)
+            {
+                buffer[i] = 3.0f * randn();
+            }
         }
 
-        if (zmq_send(publisher, buffer, sizeof(float) * screen.width, 0) == -1)
+        if (zmq_send(publisher, buffer, sizeof(float) * TRACE_WIDTH, 0) == -1)
         {
             perror("zmq_send");
             break;
@@ -135,7 +166,7 @@ int main(int argc, char *argv[])
     bool simulated_input = false;
     int c;
 
-    while ((c = getopt(argc, argv, "s")) != -1)
+    while ((c = getopt(argc, argv, "sh:w:c:")) != -1)
     {
         switch (c)
         {
@@ -176,15 +207,16 @@ int main(int argc, char *argv[])
     }
 
     // Now set up our GUI
-    InitWindow(screen.width, screen.height, "Plot");
+    InitWindow(screen.width, screen.height, "Raster1d");
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
-    Plot plot = new_plot(screen.width);
+    Raster1d raster1d = new_raster1d(NTRACES, TRACE_WIDTH, &screen);
+    screen.logical_width = raster1d.trace_width;
+    screen.logical_minx = 0.0f;
     SetTargetFPS(60);
 
-    float* points_buffer = (float*)calloc(sizeof(float), screen.width);
+    float* buffer = (float*)calloc(sizeof(float), screen.width);
 
-    RenderTexture2D rtex = LoadRenderTexture(screen.width, screen.height);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
@@ -198,21 +230,18 @@ int main(int argc, char *argv[])
             screen.width = GetScreenWidth();
             screen.height = GetScreenHeight();
 
-            free_plot(&plot);
-            plot = new_plot(screen.width);
+            free_raster1d(&raster1d);
+            raster1d = new_raster1d(NTRACES, TRACE_WIDTH, &screen);
+            screen.logical_width = raster1d.trace_width;
 
-            free(points_buffer);
-            points_buffer = (float*)calloc(sizeof(float), screen.width);
-
-            rtex = LoadRenderTexture(screen.width, screen.height);
+            free(buffer);
+            buffer = (float*)calloc(sizeof(float), screen.width);
         }
 
-        int nbytes = 0;
         while (1)
         {
-            // Receive all queued up data and push to Raster before rendering frame
-            nbytes = zmq_recv(subscriber, points_buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT);
-            if (nbytes == -1)
+            // Receive all queued up data and push to Raster1d before rendering frame
+            if (zmq_recv(subscriber, buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT) == -1)
             {
                 // If we don't have data don't block or bail, just allow loop to go
                 // along so UI remains responsive.
@@ -222,20 +251,15 @@ int main(int argc, char *argv[])
                     return -1;
                 }
                 break;
-            } else if (nbytes > sizeof(float) * screen.width) {
-                // Received data got truncated down to buffer size
-                nbytes = sizeof(float) * screen.width;
             }
 
-            // Only draw the most recent line
-            uint64_t npoints = nbytes / sizeof(float);
-            update_plot(points_buffer, npoints, &plot);
+            // This also applies colormap
+            push_trace(buffer, &raster1d, &screen);
+            screen.logical_miny = raster1d.min_value;
+            screen.logical_height = raster1d.max_value - raster1d.min_value;
         }
 
-        // TODO: Render all the data we have to a texture?
-        //Color* pixels = plot.pixels;
-        //UpdateTexture(rtex.texture, pixels);
-
+        // Render all the data we have
         Vector2 mouse_pos = GetMousePosition();
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             last_mouse = 1;
@@ -252,8 +276,8 @@ int main(int argc, char *argv[])
 
         ClearBackground(BLACK);
 
-        // Actual plot
-        DrawLineStrip(plot.points, plot.npoints, WHITE);
+        // Actual raster1d
+        draw_raster1d(&raster1d);
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             // Draw rectangle for select box
@@ -264,8 +288,8 @@ int main(int argc, char *argv[])
         }
 
         // Info panel
-        DrawRectangle(screen.width - 180, 0, 180, 40, Fade(WHITE, 0.7f));
-        DrawText("PLOT", screen.width - 170, 10, 20, BLACK);
+        DrawRectangle(screen.width - 250, 0, 250, 40, Fade(WHITE, 0.7f));
+        DrawText("RASTER 1D", screen.width - 240, 10, 20, BLACK);
         DrawFPS(screen.width - 90, 10);
 
         EndDrawing();
@@ -285,10 +309,9 @@ int main(int argc, char *argv[])
             return -1;
         }
     }
-    free(points_buffer);
-    free_plot(&plot);
-    UnloadRenderTexture(rtex);
+    free_raster1d(&raster1d);
     CloseWindow();
+    free(buffer);
     zmq_close(subscriber);
     zmq_ctx_destroy(context);
     unlink("/dev/shm/ipc");
