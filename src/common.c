@@ -115,3 +115,92 @@ void draw_mouse_drag_rectangle(Vector2 click_start, Vector2 mouse_pos, Screen* s
     snprintf(height_text, 9, "%f", _size.y);
     DrawText(height_text, (int)start.x - 45, (int)(start.y + 0.5 * size.y - 5), 10, YELLOW);
 }
+
+void free_byte_vec(ByteVec* bvec)
+{
+    if (bvec->bytes)
+    {
+        free(bvec->bytes);
+    }
+}
+
+ByteVec load_file(const char* filename)
+{
+    FILE* fid = fopen(filename, "rb");
+    if (!fid)
+    {
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+    if (fseek(fid, 0, SEEK_END) == -1)
+    {
+        perror("fseek");
+        exit(EXIT_FAILURE);
+    }
+    size_t nbytes = ftell(fid);
+    if (fseek(fid, 0, SEEK_SET) == -1)
+    {
+        perror("fseek");
+        exit(EXIT_FAILURE);
+    }
+    char* buffer = (char*)malloc(nbytes);
+    size_t nread = fread(buffer, sizeof(char), nbytes, fid);
+    if (nread != nbytes)
+    {
+        fprintf(stderr, "fread() failed: %zu\n", nread);
+        exit(EXIT_FAILURE);
+    }
+    fclose(fid);
+
+    ByteVec bvec = {
+        .nbytes = nbytes,
+        .bytes = buffer,
+    };
+
+    return bvec;
+}
+
+void free_vec_f32(VecF32* v)
+{
+    if (v->points)
+    {
+        free(v->points);
+    }
+}
+
+VecF32 load_file_f32(const char* filename)
+{
+    FILE* fid = fopen(filename, "rb");
+    if (!fid)
+    {
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+    if (fseek(fid, 0, SEEK_END) == -1)
+    {
+        perror("fseek");
+        exit(EXIT_FAILURE);
+    }
+    size_t nbytes = ftell(fid);
+    size_t nelements = nbytes / sizeof(float);
+    if (fseek(fid, 0, SEEK_SET) == -1)
+    {
+        perror("fseek");
+        exit(EXIT_FAILURE);
+    }
+    float* buffer = (float*)malloc(nelements * sizeof(float));
+    size_t nread = fread(buffer, sizeof(float), nelements, fid);
+    if (nread != nelements)
+    {
+        fprintf(stderr, "fread() failed: %zu\n", nread);
+        exit(EXIT_FAILURE);
+    }
+    fclose(fid);
+
+    VecF32 v = {
+        .npoints = nelements,
+        .points = buffer,
+    };
+
+    return v;
+}

@@ -15,7 +15,6 @@
 #include "turbo_colormap.h"
 
 
-const char* channel = "ipc://ipc";
 Screen screen = {
     .width = 480,
     .height = 640,
@@ -108,7 +107,7 @@ void* simulated_input_thread()
     // Set up ZMQ publisher
     void* context = zmq_ctx_new();
     void* publisher = zmq_socket(context, ZMQ_PUB);
-    if (zmq_bind(publisher, channel) == -1)
+    if (zmq_bind(publisher, "ipc://ipc") == -1)
     {
         perror("zmq_bind");
         abort();
@@ -145,6 +144,11 @@ void* simulated_input_thread()
     return NULL;
 }
 
+typedef enum InputType {
+    File,
+    Zmq,
+} InputType;
+
 int main(int argc, char *argv[])
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -152,13 +156,24 @@ int main(int argc, char *argv[])
     int c;
     float* colormap = (float*)inferno_srgb_floats;
     char* color_choice = NULL;
+    char* filename = NULL;
+    char* hostname = "ipc://ipc";
+    InputType type = Zmq;
 
-    while ((c = getopt(argc, argv, "sh:w:c:")) != -1)
+    while ((c = getopt(argc, argv, "sf:h:c:")) != -1)
     {
         switch (c)
         {
             case 's':
                 simulated_input = true;
+                break;
+            case 'f':
+                filename = optarg;
+                type = File;
+                break;
+            case 'h':
+                hostname = optarg;
+                type = Zmq;
                 break;
             case 'c':
                 color_choice = optarg;
@@ -180,31 +195,39 @@ int main(int argc, char *argv[])
     }
 
     printf("simulated input: %i\n", simulated_input);
+    if (type == File)
+    {
+        printf("filename: %s\n", filename);
+    } else if (type == Zmq) {
+        printf("hostname: %s\n", hostname);
+    }
+    printf("colormap choice: %s\n", color_choice);
 
     // If simulated input, spin off the simulator thread
     pthread_t tid;
     if (simulated_input)
     {
-        if (pthread_create(&tid, NULL, &simulated_input_thread, NULL) != 0)
+        if (type == Zmq)
         {
-            perror("pthread_create");
-            return -1;
+            if (pthread_create(&tid, NULL, &simulated_input_thread, NULL) != 0)
+            {
+                perror("pthread_create");
+                return -1;
+            }
+        } else if (type == File) {
+            // Create a `test.dat` to load up
+            FILE* fid = fopen("test.dat", "wb");
+            size_t sz = 16 * 1024 *  1024;
+            float* temp = (float*)malloc(sizeof(float) * sz);
+            for (size_t i = 0; i < sz; i++)
+            {
+                temp[i] = randn();
+            }
+            fwrite(temp, sizeof(float), sz, fid);
+            free(temp);
+            fclose(fid);
+            filename = "test.dat";
         }
-    }
-
-    // First set up the ZMQ subscriber socket
-    void* context = zmq_ctx_new();
-    void* subscriber = zmq_socket(context, ZMQ_SUB);
-    if (zmq_connect(subscriber, channel) == -1)
-    {
-        perror("zmq_connect");
-        return -1;
-    }
-
-    if (zmq_setsockopt(subscriber, ZMQ_SUBSCRIBE, "", 0) == -1)
-    {
-        perror("zmq_setsockopt");
-        return -1;
     }
 
     // Now set up our GUI
@@ -213,6 +236,34 @@ int main(int argc, char *argv[])
     screen.height = GetScreenHeight();
     Waterfall waterfall = new_waterfall(screen.width, screen.height);
     SetTargetFPS(60);
+
+    void* context;
+    void* subscriber;
+    if (type == Zmq)
+    {
+        // First set up the ZMQ subscriber socket
+        context = zmq_ctx_new();
+        subscriber = zmq_socket(context, ZMQ_SUB);
+        if (zmq_connect(subscriber, hostname) == -1)
+        {
+            perror("zmq_connect");
+            return -1;
+        }
+
+        if (zmq_setsockopt(subscriber, ZMQ_SUBSCRIBE, "", 0) == -1)
+        {
+            perror("zmq_setsockopt");
+            return -1;
+        }
+    } else if (type == File) {
+        // Load up the file and push it into the waterfall plot
+        VecF32 fvec = load_file_f32(filename);
+        for (size_t i = 0; i < fvec.npoints / waterfall.width; i++)
+        {
+            push_line(&(fvec.points[waterfall.width * i]), &waterfall, colormap);
+        }
+        free_vec_f32(&fvec);
+    }
 
     float* buffer = (float*)calloc(sizeof(float), screen.width);
 
@@ -243,23 +294,34 @@ int main(int argc, char *argv[])
             buffer = (float*)calloc(sizeof(float), screen.width);
         }
 
-        while (1)
+        if (type == Zmq)
         {
-            // Receive all queued up data and push to Waterfall before rendering frame
-            if (zmq_recv(subscriber, buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT) == -1)
+            while (1)
             {
-                // If we don't have data don't block or bail, just allow loop to go
-                // along so UI remains responsive.
-                if (errno != EAGAIN)
+                // Receive all queued up data and push to Waterfall before rendering frame
+                if (zmq_recv(subscriber, buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT) == -1)
                 {
-                    perror("zmq_recv");
-                    return -1;
+                    // If we don't have data don't block or bail, just allow loop to go
+                    // along so UI remains responsive.
+                    if (errno != EAGAIN)
+                    {
+                        perror("zmq_recv");
+                        return -1;
+                    }
+                    break;
                 }
-                break;
-            }
 
-            // This also applies colormap
-            push_line(buffer, &waterfall, colormap);
+                // This also applies colormap
+                push_line(buffer, &waterfall, colormap);
+            }
+        } else if (type == File && IsWindowResized()) {
+            // Load up the file and push it into the waterfall plot
+            VecF32 fvec = load_file_f32(filename);
+            for (size_t i = 0; i < fvec.npoints / waterfall.width; i++)
+            {
+                push_line(&(fvec.points[waterfall.width * i]), &waterfall, colormap);
+            }
+            free_vec_f32(&fvec);
         }
 
         // Render all the data we have
@@ -275,6 +337,7 @@ int main(int argc, char *argv[])
             last_mouse = 0;
             click_end = mouse_pos;
             printf("click end at: (%f, %f)\n", click_end.x, click_end.y);
+            // TODO: Zoom to rectangle (click_start, click_end)
         }
 
         // Draw
@@ -284,7 +347,9 @@ int main(int argc, char *argv[])
 
         // Actual waterfall
         DrawTexture(rtex.texture, 0, 0, WHITE);
-        DrawLine(0, waterfall.yidx, screen.width, waterfall.yidx, YELLOW);
+        if (type == Zmq) {
+            DrawLine(0, waterfall.yidx, screen.width, waterfall.yidx, YELLOW);
+        }
 
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             // Draw rectangle for select box
@@ -321,9 +386,12 @@ int main(int argc, char *argv[])
     UnloadRenderTexture(rtex);
     CloseWindow();
     free(buffer);
-    zmq_close(subscriber);
-    zmq_ctx_destroy(context);
-    unlink("/dev/shm/ipc");
+    if (type == Zmq)
+    {
+        zmq_close(subscriber);
+        zmq_ctx_destroy(context);
+        unlink("/dev/shm/ipc");
+    }
 
     return 0;
 }
