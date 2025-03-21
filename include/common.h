@@ -29,13 +29,23 @@ typedef struct Screen {
     float logical_miny;
 } Screen;
 
+
+typedef struct Tag {
+    Vector2 logical_position;
+    char label[22];
+} Tag;
+
+
 float min(float x, float y);
 float max(float x, float y);
 float randn();
 void get_path(const char* filename, char* pathname);
 Vector2 to_pixels(Vector2 logical, Screen* screen);
 Vector2 to_logical(Vector2 pixels, Screen* screen);
-void draw_mouse_crosshair(Vector2 mouse_pos, Screen* screen);
-void draw_mouse_drag_rectangle(Vector2 click_start, Vector2 mouse_pos, Screen* screen);
 ByteVec load_file_bytes(const char* filename);
 VecF32 load_file_f32(const char* filename);
+
+void draw_mouse_crosshair(Vector2 mouse_pos, Screen* screen);
+void draw_mouse_drag_rectangle(Vector2 click_start, Vector2 mouse_pos, Screen* screen);
+void draw_info_panel(Screen* screen);
+void draw_tags(Tag* tags, size_t ntags, Screen* screen);

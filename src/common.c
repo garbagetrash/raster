@@ -204,3 +204,19 @@ VecF32 load_file_f32(const char* filename)
 
     return v;
 }
+
+void draw_info_panel(Screen *screen)
+{
+    DrawRectangle(screen->width - 170, 0, 170, 56, Fade(WHITE, 0.7f));
+    DrawText("Space for controls", screen->width - 160, 8, 16, BLACK);
+}
+
+void draw_tags(Tag* tags, size_t ntags, Screen* screen)
+{
+    for (size_t i = 0; i < ntags; i++)
+    {
+        Vector2 pixels = to_pixels(tags[i].logical_position, screen);
+        DrawCircleLinesV(pixels, 2, YELLOW);
+        DrawText(tags[i].label, pixels.x - 52, pixels.y - 15, 10, YELLOW);
+    }
+}

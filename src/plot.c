@@ -26,6 +26,17 @@ Screen screen = {
 };
 
 
+typedef enum {
+    MAIN,
+    HELP,
+} ActiveScreen;
+
+
+Tag global_tags[16] = { 0 };
+size_t ntags = 0;
+ActiveScreen active_screen = MAIN;
+
+
 typedef struct Plot {
     float min_value;
     float max_value;
@@ -181,6 +192,7 @@ int main(int argc, char *argv[])
     screen.height = GetScreenHeight();
     Plot plot = new_plot(screen.width);
     SetTargetFPS(60);
+    Font font = LoadFont("resources/fonts/pixelplay.png");
 
     float* points_buffer = (float*)calloc(sizeof(float), screen.width);
 
@@ -247,26 +259,68 @@ int main(int argc, char *argv[])
             printf("click end at: (%f, %f)\n", click_end.x, click_end.y);
         }
 
+        // Tags
+        if (IsKeyPressed(KEY_T) && active_screen == MAIN && ntags < 16)
+        {
+            Vector2 tagpos = to_logical(mouse_pos, &screen);
+            printf("New Tag: (%f, %f)\n", tagpos.x, tagpos.y);
+
+            Tag t = {
+                .logical_position = tagpos,
+                .label = "",
+            };
+            snprintf(t.label, 22, "(%f, %f)", tagpos.x, tagpos.y);
+            global_tags[ntags] = t;
+            ntags++;
+        } else if (IsKeyPressed(KEY_Y)) {
+            ntags = 0;
+        } else if (IsKeyPressed(KEY_SPACE)) {
+            if (active_screen == MAIN) {
+                active_screen = HELP;
+            } else if (active_screen == HELP) {
+                active_screen = MAIN;
+            }
+        }
+
         // Draw
         BeginDrawing();
 
         ClearBackground(BLACK);
 
-        // Actual plot
-        DrawLineStrip(plot.points, plot.npoints, WHITE);
+        if (active_screen == HELP) {
+            DrawText("Controls", 20, 10, 20, WHITE);
+            DrawText("t   - Draw Tag", 20, 40, 14, WHITE);
+            DrawText("y   - Clear Tags", 20, 60, 14, WHITE);
+            DrawText("Click and Drag to zoom", 20, 80, 14, WHITE);
+            DrawText("Esc - Quit", 20, 100, 14, WHITE);
 
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            // Draw rectangle for select box
-            draw_mouse_drag_rectangle(click_start, mouse_pos, &screen);
+            DrawText("Tags", screen.width / 2, 10, 20, WHITE);
+            for (size_t i = 0; i < ntags; i++)
+            {
+                Vector2 tpos = { .x = screen.width / 2, .y = 40 + 20 * i };
+                DrawTextEx(font, global_tags[i].label, tpos, 14, 4.0f, WHITE);
+            }
         } else {
-            // Mouse crosshair
-            draw_mouse_crosshair(mouse_pos, &screen);
+            // Actual plot
+            DrawLineStrip(plot.points, plot.npoints, WHITE);
+
+            // Draw tagged positions
+            draw_tags(global_tags, ntags, &screen);
+
+            // Draw crosshairs and select box
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                // Draw rectangle for select box
+                draw_mouse_drag_rectangle(click_start, mouse_pos, &screen);
+            } else {
+                // Mouse crosshair
+                draw_mouse_crosshair(mouse_pos, &screen);
+            }
+
+            // Info panel
+            draw_info_panel(&screen);
         }
 
-        // Info panel
-        DrawRectangle(screen.width - 180, 0, 180, 40, Fade(WHITE, 0.7f));
-        DrawText("PLOT", screen.width - 170, 10, 20, BLACK);
-        DrawFPS(screen.width - 90, 10);
+        DrawFPS(screen.width - 90, 30);
 
         EndDrawing();
     }
@@ -292,6 +346,7 @@ int main(int argc, char *argv[])
     zmq_close(subscriber);
     zmq_ctx_destroy(context);
     unlink("/dev/shm/ipc");
+    UnloadFont(font);
 
     return 0;
 }
