@@ -1,5 +1,6 @@
 #pragma once
 
+#include <complex.h>
 #include <stdint.h>
 
 #include "raylib.h"
@@ -10,6 +11,13 @@ typedef struct VecF32 {
 } VecF32;
 
 void free_vec_f32(VecF32* v);
+
+typedef struct VecCf32 {
+    uint64_t npoints;
+    float complex* points;
+} VecCf32;
+
+void free_vec_cf32(VecCf32* v);
 
 typedef struct ByteVec {
     uint64_t nbytes;
@@ -36,6 +44,23 @@ typedef struct Tag {
 } Tag;
 
 
+typedef enum {
+    U8,
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    Ci8,
+    Ci16,
+    Ci32,
+    Ci64,
+    Cf32,
+    Cf64,
+} DataType;
+
+
 float min(float x, float y);
 float max(float x, float y);
 float randn();
@@ -43,7 +68,8 @@ void get_path(const char* filename, char* pathname);
 Vector2 to_pixels(Vector2 logical, Screen* screen);
 Vector2 to_logical(Vector2 pixels, Screen* screen);
 ByteVec load_file_bytes(const char* filename);
-VecF32 load_file_f32(const char* filename);
+VecF32 load_file_real(const char* filename, DataType type);
+VecCf32 load_file_complex(const char* filename, DataType type);
 
 void draw_mouse_crosshair(Vector2 mouse_pos, Screen* screen);
 void draw_mouse_drag_rectangle(Vector2 click_start, Vector2 mouse_pos, Screen* screen);

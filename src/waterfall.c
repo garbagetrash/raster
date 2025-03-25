@@ -269,7 +269,7 @@ int main(int argc, char *argv[])
         }
     } else if (type == File) {
         // Load up the file and push it into the waterfall plot
-        VecF32 fvec = load_file_f32(filename);
+        VecF32 fvec = load_file_real(filename, F32);
         for (size_t i = 0; i < fvec.npoints / waterfall.width; i++)
         {
             push_line(&(fvec.points[waterfall.width * i]), &waterfall, colormap);
@@ -328,7 +328,7 @@ int main(int argc, char *argv[])
             }
         } else if (type == File && IsWindowResized()) {
             // Load up the file and push it into the waterfall plot
-            VecF32 fvec = load_file_f32(filename);
+            VecF32 fvec = load_file_real(filename, F32);
             for (size_t i = 0; i < fvec.npoints / waterfall.width; i++)
             {
                 push_line(&(fvec.points[waterfall.width * i]), &waterfall, colormap);

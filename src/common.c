@@ -1,3 +1,4 @@
+#include <complex.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,8 +169,70 @@ void free_vec_f32(VecF32* v)
     }
 }
 
-VecF32 load_file_f32(const char* filename)
+void free_vec_cf32(VecCf32* v)
 {
+    if (v->points)
+    {
+        free(v->points);
+    }
+}
+
+void convert_i8_f32(const int8_t* in, float* out, size_t nelements)
+{
+    for (size_t i = 0; i < nelements; i++)
+    {
+        out[i] = (float)in[i];
+    }
+}
+
+void convert_i16_f32(const int16_t* in, float* out, size_t nelements)
+{
+    for (size_t i = 0; i < nelements; i++)
+    {
+        out[i] = (float)in[i];
+    }
+}
+
+void convert_i32_f32(const int32_t* in, float* out, size_t nelements)
+{
+    for (size_t i = 0; i < nelements; i++)
+    {
+        out[i] = (float)in[i];
+    }
+}
+
+void convert_i64_f32(const int64_t* in, float* out, size_t nelements)
+{
+    for (size_t i = 0; i < nelements; i++)
+    {
+        out[i] = (float)in[i];
+    }
+}
+
+void convert_f64_f32(const double* in, float* out, size_t nelements)
+{
+    for (size_t i = 0; i < nelements; i++)
+    {
+        out[i] = (float)in[i];
+    }
+}
+
+VecF32 load_file_real(const char* filename, DataType type)
+{
+    size_t element_size = 4;
+    switch (type)
+    {
+        case I8: element_size = 1; break;
+        case I16: element_size = 2; break;
+        case I32: element_size = 4; break;
+        case I64: element_size = 8; break;
+        case F32: element_size = 4; break;
+        case F64: element_size = 8; break;
+        default:
+            fprintf(stderr, "DataType not supported");
+            exit(EXIT_FAILURE);
+    }
+
     FILE* fid = fopen(filename, "rb");
     if (!fid)
     {
@@ -182,14 +245,14 @@ VecF32 load_file_f32(const char* filename)
         exit(EXIT_FAILURE);
     }
     size_t nbytes = ftell(fid);
-    size_t nelements = nbytes / sizeof(float);
+    size_t nelements = nbytes / element_size;
     if (fseek(fid, 0, SEEK_SET) == -1)
     {
         perror("fseek");
         exit(EXIT_FAILURE);
     }
-    float* buffer = (float*)malloc(nelements * sizeof(float));
-    size_t nread = fread(buffer, sizeof(float), nelements, fid);
+    void* _buffer = malloc(nelements * element_size);
+    size_t nread = fread(_buffer, element_size, nelements, fid);
     if (nread != nelements)
     {
         fprintf(stderr, "fread() failed: %zu\n", nread);
@@ -197,7 +260,96 @@ VecF32 load_file_f32(const char* filename)
     }
     fclose(fid);
 
+    float* buffer = (float*)malloc(nelements * sizeof(float));
+    switch (type)
+    {
+        case I8: convert_i8_f32((int8_t*)_buffer, buffer, nelements); break;
+        case I16: convert_i16_f32((int16_t*)_buffer, buffer, nelements); break;
+        case I32: convert_i32_f32((int32_t*)_buffer, buffer, nelements); break;
+        case I64: convert_i64_f32((int64_t*)_buffer, buffer, nelements); break;
+        case F32: buffer = (float*)buffer; break;
+        case F64: convert_f64_f32((double*)_buffer, buffer, nelements); break;
+        default:
+            fprintf(stderr, "DataType not supported");
+            exit(EXIT_FAILURE);
+    }
+
+    if (type != F32)
+    {
+        free(_buffer);
+    }
+
     VecF32 v = {
+        .npoints = nelements,
+        .points = buffer,
+    };
+
+    return v;
+}
+
+VecCf32 load_file_complex(const char* filename, DataType type)
+{
+    size_t element_size = 4;
+    switch (type)
+    {
+        case Ci8: element_size = 1; break;
+        case Ci16: element_size = 2; break;
+        case Ci32: element_size = 4; break;
+        case Ci64: element_size = 8; break;
+        case Cf32: element_size = 4; break;
+        case Cf64: element_size = 8; break;
+        default:
+            fprintf(stderr, "DataType not supported");
+            exit(EXIT_FAILURE);
+    }
+
+    FILE* fid = fopen(filename, "rb");
+    if (!fid)
+    {
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+    if (fseek(fid, 0, SEEK_END) == -1)
+    {
+        perror("fseek");
+        exit(EXIT_FAILURE);
+    }
+    size_t nbytes = ftell(fid);
+    size_t nelements = nbytes / (2 * element_size);
+    if (fseek(fid, 0, SEEK_SET) == -1)
+    {
+        perror("fseek");
+        exit(EXIT_FAILURE);
+    }
+    void* _buffer = malloc(2 * nelements * element_size);
+    size_t nread = fread(_buffer, element_size, 2 * nelements, fid);
+    if (nread != 2 * nelements)
+    {
+        fprintf(stderr, "fread() failed: %zu\n", nread);
+        exit(EXIT_FAILURE);
+    }
+    fclose(fid);
+
+    float complex* buffer = (float complex*)malloc(nelements * sizeof(float complex));
+    switch (type)
+    {
+        case Ci8:  convert_i8_f32((int8_t*)_buffer, (float*)buffer, 2 * nelements); break;
+        case Ci16: convert_i16_f32((int16_t*)_buffer, (float*)buffer, 2 * nelements); break;
+        case Ci32: convert_i32_f32((int32_t*)_buffer, (float*)buffer, 2 * nelements); break;
+        case Ci64: convert_i64_f32((int64_t*)_buffer, (float*)buffer, 2 * nelements); break;
+        case Cf32: buffer = (float complex*)buffer; break;
+        case Cf64: convert_f64_f32((double*)_buffer, (float*)buffer, 2 * nelements); break;
+        default:
+            fprintf(stderr, "DataType not supported");
+            exit(EXIT_FAILURE);
+    }
+
+    if (type != Cf32)
+    {
+        free(_buffer);
+    }
+
+    VecCf32 v = {
         .npoints = nelements,
         .points = buffer,
     };

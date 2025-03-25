@@ -32,22 +32,27 @@ find_package(Threads REQUIRED)
 # Resources path
 set(RESOURCES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
+set(COMMON_SRC
+    src/common.c
+    src/filetypes.c
+)
+
 # Build our examples
-add_executable(plot src/plot.c src/common.c)
+add_executable(plot src/plot.c ${COMMON_SRC})
 target_include_directories(plot PRIVATE include ${ZeroMQ_SOURCE_DIR}/include)
 target_link_libraries(plot PRIVATE raylib libzmq Threads::Threads)
 target_compile_definitions(plot PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
 target_compile_options(plot PRIVATE $<$<CONFIG:Debug>:-fno-omit-frame-pointer -fsanitize=address>)
 target_link_options(plot PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
 
-add_executable(waterfall src/waterfall.c src/common.c)
+add_executable(waterfall src/waterfall.c ${COMMON_SRC})
 target_include_directories(waterfall PRIVATE include ${ZeroMQ_SOURCE_DIR}/include)
 target_link_libraries(waterfall PRIVATE raylib libzmq Threads::Threads)
 target_compile_definitions(waterfall PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
 target_compile_options(waterfall PRIVATE $<$<CONFIG:Debug>:-fno-omit-frame-pointer -fsanitize=address>)
 target_link_options(waterfall PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
 
-add_executable(raster1d src/raster1d.c src/common.c)
+add_executable(raster1d src/raster1d.c ${COMMON_SRC})
 target_include_directories(raster1d PRIVATE include ${ZeroMQ_SOURCE_DIR}/include)
 target_link_libraries(raster1d PRIVATE raylib libzmq Threads::Threads)
 target_compile_definitions(raster1d PRIVATE RESOURCES_DIR="${RESOURCES_DIR}")
