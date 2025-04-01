@@ -1,13 +1,13 @@
+#include <errno.h>
+#include <fcntl.h>
 #include <float.h>
 #include <math.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "raylib.h"
-#include "zmq.h"
 #include "common.h"
 #include "grayscale_colormap.h"
 #include "inferno_colormap.h"
@@ -15,7 +15,6 @@
 #include "turbo_colormap.h"
 
 
-const char* channel = "ipc://ipc";
 Screen screen = {
     .width = 640,
     .height = 480,
@@ -98,93 +97,9 @@ void update_plot(float* points, uint64_t npoints, Plot* plot)
     }
 }
 
-void* simulated_input_thread()
-{
-    // Set up ZMQ publisher
-    void* context = zmq_ctx_new();
-    void* publisher = zmq_socket(context, ZMQ_PUB);
-    if (zmq_bind(publisher, channel) == -1)
-    {
-        perror("zmq_bind");
-        abort();
-    }
-
-    float* buffer = (float*)calloc(sizeof(float), 4 * 1920);
-
-    // Loop forever on sending some data
-    while (1)
-    {
-        for (int i = 0; i < screen.width; i++)
-        {
-            buffer[i] = -fabsf((screen.width / 2.0f) - i) + randn();
-        }
-
-        if (zmq_send(publisher, buffer, sizeof(float) * screen.width, 0) == -1)
-        {
-            perror("zmq_send");
-            break;
-        }
-
-        if (usleep(16000) == -1)
-        {
-            perror("usleep");
-            break;
-        }
-    }
-
-    // Cleanup
-    free(buffer);
-    zmq_close(publisher);
-    zmq_ctx_destroy(context);
-
-    return NULL;
-}
-
 int main(int argc, char *argv[])
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    bool simulated_input = false;
-    int c;
-
-    while ((c = getopt(argc, argv, "s")) != -1)
-    {
-        switch (c)
-        {
-            case 's':
-                simulated_input = true;
-                break;
-            default:
-                abort();
-        }
-    }
-
-    printf("simulated input: %i\n", simulated_input);
-
-    // If simulated input, spin off the simulator thread
-    pthread_t tid;
-    if (simulated_input)
-    {
-        if (pthread_create(&tid, NULL, &simulated_input_thread, NULL) != 0)
-        {
-            perror("pthread_create");
-            return -1;
-        }
-    }
-
-    // First set up the ZMQ subscriber socket
-    void* context = zmq_ctx_new();
-    void* subscriber = zmq_socket(context, ZMQ_SUB);
-    if (zmq_connect(subscriber, channel) == -1)
-    {
-        perror("zmq_connect");
-        return -1;
-    }
-
-    if (zmq_setsockopt(subscriber, ZMQ_SUBSCRIBE, "", 0) == -1)
-    {
-        perror("zmq_setsockopt");
-        return -1;
-    }
 
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Plot");
@@ -200,6 +115,8 @@ int main(int argc, char *argv[])
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
+
+    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 
     while (!WindowShouldClose())
     {
@@ -219,29 +136,33 @@ int main(int argc, char *argv[])
             rtex = LoadRenderTexture(screen.width, screen.height);
         }
 
-        int nbytes = 0;
+        int nelements = 0;
         while (1)
         {
             // Receive all queued up data and push to Raster before rendering frame
-            nbytes = zmq_recv(subscriber, points_buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT);
-            if (nbytes == -1)
+            ssize_t nbytes = read(0, points_buffer, sizeof(float)*screen.width);
+            if (nbytes == 0)
             {
-                // If we don't have data don't block or bail, just allow loop to go
-                // along so UI remains responsive.
-                if (errno != EAGAIN)
-                {
-                    perror("zmq_recv");
-                    return -1;
-                }
+                // EOF
                 break;
-            } else if (nbytes > sizeof(float) * screen.width) {
+            } else if (nbytes == -1) {
+                if (errno == EAGAIN)
+                {
+                    break;
+                } else {
+                    // Error
+                    perror("read");
+                    break;
+                }
+            }
+            nelements = nbytes / sizeof(float);
+            if (nelements > screen.width) {
                 // Received data got truncated down to buffer size
-                nbytes = sizeof(float) * screen.width;
+                nelements = screen.width;
             }
 
             // Only draw the most recent line
-            uint64_t npoints = nbytes / sizeof(float);
-            update_plot(points_buffer, npoints, &plot);
+            update_plot(points_buffer, nelements, &plot);
         }
 
         // TODO: Render all the data we have to a texture?
@@ -320,31 +241,16 @@ int main(int argc, char *argv[])
             draw_info_panel(&screen);
         }
 
-        DrawFPS(screen.width - 90, 30);
-
         EndDrawing();
     }
 
+    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | ~O_NONBLOCK);
+
     // Clean up
-    if (simulated_input)
-    {
-        if (pthread_cancel(tid) != 0)
-        {
-            perror("pthread_cancel");
-            return -1;
-        }
-        if (pthread_join(tid, NULL) != 0)
-        {
-            perror("pthread_join");
-            return -1;
-        }
-    }
     free(points_buffer);
     free_plot(&plot);
     UnloadRenderTexture(rtex);
     CloseWindow();
-    zmq_close(subscriber);
-    zmq_ctx_destroy(context);
     unlink("/dev/shm/ipc");
     UnloadFont(font);
 

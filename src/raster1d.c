@@ -343,8 +343,6 @@ int main(int argc, char *argv[])
             // Info panel
             draw_info_panel(&screen);
         }
-        DrawFPS(screen.width - 90, 30);
-
         EndDrawing();
     }
 

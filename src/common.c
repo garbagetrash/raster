@@ -359,8 +359,12 @@ VecCf32 load_file_complex(const char* filename, DataType type)
 
 void draw_info_panel(Screen *screen)
 {
-    DrawRectangle(screen->width - 170, 0, 170, 56, Fade(WHITE, 0.7f));
-    DrawText("Space for controls", screen->width - 160, 8, 16, BLACK);
+    if (screen->width >= 170 && screen->height >= 56)
+    {
+        DrawRectangle(screen->width - 170, 0, 170, 56, Fade(WHITE, 0.7f));
+        DrawText("Space for controls", screen->width - 160, 8, 16, BLACK);
+        DrawFPS(screen->width - 90, 30);
+    }
 }
 
 void draw_tags(Tag* tags, size_t ntags, Screen* screen)
