@@ -1,22 +1,21 @@
+#include <errno.h>
+#include <fcntl.h>
 #include <float.h>
 #include <math.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "raylib.h"
-#include "zmq.h"
 #include "common.h"
 
 
 const int NTRACES = 64;
 const int TRACE_WIDTH = 256;
-const char* channel = "ipc://ipc";
 Screen screen = {
-    .width = 480,
-    .height = 640,
+    .width = 640,
+    .height = 480,
     .logical_width = 1.0f,
     .logical_height = 1.0f,
     .logical_minx = -0.5f,
@@ -121,101 +120,9 @@ void draw_raster1d(Raster1d* raster1d)
     }
 }
 
-void* simulated_input_thread()
-{
-    // Set up ZMQ publisher
-    void* context = zmq_ctx_new();
-    void* publisher = zmq_socket(context, ZMQ_PUB);
-    if (zmq_bind(publisher, channel) == -1)
-    {
-        perror("zmq_bind");
-        abort();
-    }
-
-    float* buffer = (float*)calloc(sizeof(float), 4 * 1920);
-
-    // Loop forever on sending some data
-    while (1)
-    {
-        if (randn() > 1.0f)
-        {
-            for (int i = 0; i < TRACE_WIDTH; i++)
-            {
-                buffer[i] = TRACE_WIDTH / 2.0f - fabsf((TRACE_WIDTH / 2.0f) - i) + 3.0f * randn();
-            }
-        } else {
-            for (int i = 0; i < TRACE_WIDTH; i++)
-            {
-                buffer[i] = 3.0f * randn();
-            }
-        }
-
-        if (zmq_send(publisher, buffer, sizeof(float) * TRACE_WIDTH, 0) == -1)
-        {
-            perror("zmq_send");
-            break;
-        }
-
-        if (usleep(16000) == -1)
-        {
-            perror("usleep");
-            break;
-        }
-    }
-
-    // Cleanup
-    free(buffer);
-    zmq_close(publisher);
-    zmq_ctx_destroy(context);
-
-    return NULL;
-}
-
 int main(int argc, char *argv[])
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    bool simulated_input = false;
-    int c;
-
-    while ((c = getopt(argc, argv, "sh:w:c:")) != -1)
-    {
-        switch (c)
-        {
-            case 's':
-                simulated_input = true;
-                break;
-            default:
-                abort();
-        }
-    }
-
-    printf("simulated input: %i\n", simulated_input);
-
-    // If simulated input, spin off the simulator thread
-    pthread_t tid;
-    if (simulated_input)
-    {
-        if (pthread_create(&tid, NULL, &simulated_input_thread, NULL) != 0)
-        {
-            perror("pthread_create");
-            return -1;
-        }
-    }
-
-    // First set up the ZMQ subscriber socket
-    void* context = zmq_ctx_new();
-    void* subscriber = zmq_socket(context, ZMQ_SUB);
-    if (zmq_connect(subscriber, channel) == -1)
-    {
-        perror("zmq_connect");
-        return -1;
-    }
-
-    if (zmq_setsockopt(subscriber, ZMQ_SUBSCRIBE, "", 0) == -1)
-    {
-        perror("zmq_setsockopt");
-        return -1;
-    }
 
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Raster1d");
@@ -232,6 +139,8 @@ int main(int argc, char *argv[])
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
+
+    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 
     while (!WindowShouldClose())
     {
@@ -253,14 +162,17 @@ int main(int argc, char *argv[])
         while (1)
         {
             // Receive all queued up data and push to Raster1d before rendering frame
-            if (zmq_recv(subscriber, buffer, sizeof(float) * screen.width, ZMQ_DONTWAIT) == -1)
+            ssize_t nbytes = read(0, buffer, sizeof(float) * screen.width);
+            if (nbytes == 0)
             {
+                // EOF
+                break;
+            } else if (nbytes == -1) {
                 // If we don't have data don't block or bail, just allow loop to go
                 // along so UI remains responsive.
                 if (errno != EAGAIN)
                 {
-                    perror("zmq_recv");
-                    return -1;
+                    perror("read");
                 }
                 break;
             }
@@ -346,26 +258,12 @@ int main(int argc, char *argv[])
         EndDrawing();
     }
 
+    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | ~O_NONBLOCK);
+
     // Clean up
-    if (simulated_input)
-    {
-        if (pthread_cancel(tid) != 0)
-        {
-            perror("pthread_cancel");
-            return -1;
-        }
-        if (pthread_join(tid, NULL) != 0)
-        {
-            perror("pthread_join");
-            return -1;
-        }
-    }
     free_raster1d(&raster1d);
     CloseWindow();
     free(buffer);
-    zmq_close(subscriber);
-    zmq_ctx_destroy(context);
-    unlink("/dev/shm/ipc");
     UnloadFont(font);
 
     return 0;

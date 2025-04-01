@@ -251,7 +251,6 @@ int main(int argc, char *argv[])
     free_plot(&plot);
     UnloadRenderTexture(rtex);
     CloseWindow();
-    unlink("/dev/shm/ipc");
     UnloadFont(font);
 
     return 0;
