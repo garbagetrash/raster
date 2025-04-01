@@ -38,8 +38,10 @@ float randn()
 // From logical space x, y: [0.0, 1.0) to screen space [0, # pixels).
 Vector2 to_pixels(Vector2 logical, Screen* screen)
 {
-    float normx = (logical.x - screen->logical_minx) / screen->logical_width;
-    float normy = (logical.y - screen->logical_miny) / screen->logical_height;
+    float normx = (logical.x - screen->zoom_stack[screen->zlevel].logical_minx) /
+        screen->zoom_stack[screen->zlevel].logical_width;
+    float normy = (logical.y - screen->zoom_stack[screen->zlevel].logical_miny) /
+        screen->zoom_stack[screen->zlevel].logical_height;
     Vector2 point = { normx * screen->width, (1.0f - normy) * screen->height };
     return point;
 }
@@ -50,8 +52,8 @@ Vector2 to_logical(Vector2 pixels, Screen* screen)
     float normx = pixels.x / screen->width;
     float normy = pixels.y / screen->height;
     Vector2 point = {
-        normx * screen->logical_width + screen->logical_minx,
-        (1.0f - normy) * screen->logical_height + screen->logical_miny
+        normx * screen->zoom_stack[screen->zlevel].logical_width + screen->zoom_stack[screen->zlevel].logical_minx,
+        (1.0f - normy) * screen->zoom_stack[screen->zlevel].logical_height + screen->zoom_stack[screen->zlevel].logical_miny
     };
     return point;
 }
@@ -372,7 +374,33 @@ void draw_tags(Tag* tags, size_t ntags, Screen* screen)
     for (size_t i = 0; i < ntags; i++)
     {
         Vector2 pixels = to_pixels(tags[i].logical_position, screen);
+        DrawCircleV(pixels, 3, Fade(BLACK, 0.5f));
         DrawCircleLinesV(pixels, 2, YELLOW);
+        DrawRectangle(pixels.x - 55, pixels.y - 15, 110, 10, Fade(BLACK, 0.5f));
         DrawText(tags[i].label, pixels.x - 52, pixels.y - 15, 10, YELLOW);
+    }
+}
+
+void push_zoom_stack(Screen* screen, Vector2 click_start, Vector2 click_end)
+{
+    if (screen->zlevel < 15)
+    {
+        Vector2 start_logical = to_logical(click_start, screen);
+        Vector2 end_logical = to_logical(click_end, screen);
+        Zoom new_zoom;
+        new_zoom.logical_width = fabs(end_logical.x - start_logical.x);
+        new_zoom.logical_height = fabs(end_logical.y - start_logical.y);
+        if (end_logical.x < start_logical.x) {
+            new_zoom.logical_minx = end_logical.x;
+        } else {
+            new_zoom.logical_minx = start_logical.x;
+        }
+        if (end_logical.y < start_logical.y) {
+            new_zoom.logical_miny = end_logical.y;
+        } else {
+            new_zoom.logical_miny = start_logical.y;
+        }
+        screen->zlevel++;
+        screen->zoom_stack[screen->zlevel] = new_zoom;
     }
 }

@@ -26,15 +26,20 @@ typedef struct ByteVec {
 
 void free_byte_vec(ByteVec* bvec);
 
+typedef struct Zoom {
+    float logical_width;
+    float logical_height;
+    float logical_minx;
+    float logical_miny;
+} Zoom;
+
 // Logical is [0, 1) in x and y, first quadrant of a plot so top is y = 1
 // bottom is y = 0.
 typedef struct Screen {
     int width;  // pixels
     int height; // pixels
-    float logical_width;
-    float logical_height;
-    float logical_minx;
-    float logical_miny;
+    Zoom zoom_stack[16];
+    int zlevel;
 } Screen;
 
 
@@ -75,3 +80,4 @@ void draw_mouse_crosshair(Vector2 mouse_pos, Screen* screen);
 void draw_mouse_drag_rectangle(Vector2 click_start, Vector2 mouse_pos, Screen* screen);
 void draw_info_panel(Screen* screen);
 void draw_tags(Tag* tags, size_t ntags, Screen* screen);
+void push_zoom_stack(Screen* screen, Vector2 click_start, Vector2 click_end);

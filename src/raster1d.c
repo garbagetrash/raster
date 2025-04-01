@@ -16,10 +16,15 @@ const int TRACE_WIDTH = 256;
 Screen screen = {
     .width = 640,
     .height = 480,
-    .logical_width = 1.0f,
-    .logical_height = 1.0f,
-    .logical_minx = -0.5f,
-    .logical_miny = 0.0f,
+    .zoom_stack = {
+        (Zoom) {
+            .logical_width = 1.0f,
+            .logical_height = 1.0f,
+            .logical_minx = -0.5f,
+            .logical_miny = 0.0f,
+        },
+    },
+    .zlevel = 0,
 };
 
 
@@ -129,8 +134,8 @@ int main(int argc, char *argv[])
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
     Raster1d raster1d = new_raster1d(NTRACES, TRACE_WIDTH, &screen);
-    screen.logical_width = raster1d.trace_width;
-    screen.logical_minx = 0.0f;
+    screen.zoom_stack[0].logical_width = raster1d.trace_width;
+    screen.zoom_stack[0].logical_minx = 0.0f;
     SetTargetFPS(60);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
@@ -153,7 +158,7 @@ int main(int argc, char *argv[])
 
             free_raster1d(&raster1d);
             raster1d = new_raster1d(NTRACES, TRACE_WIDTH, &screen);
-            screen.logical_width = raster1d.trace_width;
+            screen.zoom_stack[0].logical_width = raster1d.trace_width;
 
             free(buffer);
             buffer = (float*)calloc(sizeof(float), screen.width);
@@ -179,8 +184,8 @@ int main(int argc, char *argv[])
 
             // This also applies colormap
             push_trace(buffer, &raster1d, &screen);
-            screen.logical_miny = raster1d.min_value;
-            screen.logical_height = raster1d.max_value - raster1d.min_value;
+            screen.zoom_stack[0].logical_miny = raster1d.min_value;
+            screen.zoom_stack[0].logical_height = raster1d.max_value - raster1d.min_value;
         }
 
         // Render all the data we have
@@ -193,6 +198,16 @@ int main(int argc, char *argv[])
             last_mouse = 0;
             click_end = mouse_pos;
             printf("click end at: (%f, %f)\n", click_end.x, click_end.y);
+
+            // Zoom to rectangle (click_start, click_end)
+            push_zoom_stack(&screen, click_start, click_end);
+        }
+
+        // Right click to back out the zoom stack 1 level
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            if (screen.zlevel > 0) {
+                screen.zlevel--;
+            }
         }
 
         // Tags

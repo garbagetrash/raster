@@ -15,15 +15,21 @@
 #include "turbo_colormap.h"
 
 
+// TODO: Need to think more about this, ideally zoom operates like a stack.
+// Draw rectangle to push a new zoom, right click to pop a zoom.
 Screen screen = {
     .width = 480,
     .height = 640,
-    .logical_width = 1.0f,
-    .logical_height = 1.0f,
-    .logical_minx = -0.5f,
-    .logical_miny = 0.0f,
+    .zoom_stack = {
+        (Zoom) {
+            .logical_width = 1.0f,
+            .logical_height = 1.0f,
+            .logical_minx = -0.5f,
+            .logical_miny = 0.0f,
+        },
+    },
+    .zlevel = 0,
 };
-
 
 typedef enum {
     MAIN,
@@ -36,6 +42,7 @@ size_t ntags = 0;
 ActiveScreen active_screen = MAIN;
 
 
+// TODO: Implement zoom on actual waterfall/texture
 typedef struct Waterfall {
     int width;
     int height;
@@ -219,7 +226,16 @@ int main(int argc, char *argv[])
             last_mouse = 0;
             click_end = mouse_pos;
             printf("click end at: (%f, %f)\n", click_end.x, click_end.y);
-            // TODO: Zoom to rectangle (click_start, click_end)
+
+            // Zoom to rectangle (click_start, click_end)
+            push_zoom_stack(&screen, click_start, click_end);
+        }
+
+        // Right click to back out the zoom stack 1 level
+        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            if (screen.zlevel > 0) {
+                screen.zlevel--;
+            }
         }
 
         // Tags
