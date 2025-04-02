@@ -83,9 +83,9 @@ void free_raster1d(Raster1d* r)
 void push_trace(const float* trace, Raster1d* raster1d, Screen* screen)
 {
     // Update range
-    for (int x = 0; x < raster1d->trace_width; x++)
+    for (int i = 0; i < raster1d->trace_width; i++)
     {
-        float value = trace[x];
+        float value = trace[i];
         if (value > raster1d->max_value)
         {
             raster1d->max_value = value;
@@ -96,12 +96,23 @@ void push_trace(const float* trace, Raster1d* raster1d, Screen* screen)
         }
     }
     float range = raster1d->max_value - raster1d->min_value;
+    screen->zoom_stack[0].logical_miny = raster1d->min_value;
+    screen->zoom_stack[0].logical_height = range;
+    screen->zoom_stack[0].logical_minx = 0.0;
+    screen->zoom_stack[0].logical_width = (float)raster1d->trace_width;
+
+    if (screen->zlevel > 0)
+    {
+        range = screen->zoom_stack[screen->zlevel].logical_height;
+    }
+
+    // Little fudge just to ensure range stays > 0.0
+    range += 1e-6;
 
     int idx;
     for (int x = 0; x < raster1d->trace_width; x++)
     {
         float value = trace[x];
-        // Apply colormap here
         idx = (raster1d->tidx * raster1d->trace_width + x);
         Vector2 pt = { x, value };
         raster1d->traces[idx] = to_pixels(pt, screen);

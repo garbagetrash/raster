@@ -45,6 +45,7 @@ typedef struct Plot {
     float min_value;
     float max_value;
     int32_t npoints;
+    int32_t max_points;
     Vector2* points;
 } Plot;
 
@@ -56,6 +57,7 @@ Plot new_plot(uint32_t npoints)
         .min_value = FLT_MAX,
         .max_value = FLT_MIN,
         .npoints = npoints,
+        .max_points = npoints,
         .points = buffer
     };
     return p;
@@ -70,10 +72,13 @@ void free_plot(Plot* p)
 }
 
 // Shallow copy, just passing the pointer along.
-void update_plot(float* points, uint64_t npoints, Plot* plot)
+void update_plot(const float* points, const uint64_t npoints, Screen* screen, Plot* plot)
 {
     plot->npoints = npoints;
-    float dx = (float)screen.width / (plot->npoints - 1);
+    if (plot->npoints > plot->max_points) {
+        plot->max_points = plot->npoints;
+    }
+    float dx = (float)screen->width / (plot->npoints - 1);
 
     // Update plot range
     for (int i = 0; i < plot->npoints; i++)
@@ -89,14 +94,25 @@ void update_plot(float* points, uint64_t npoints, Plot* plot)
         }
     }
 
+    screen->zoom_stack[0].logical_miny = plot->min_value;
+    float range = plot->max_value - plot->min_value;
+    screen->zoom_stack[0].logical_height = range;
+    screen->zoom_stack[0].logical_minx = 0.0;
+    screen->zoom_stack[0].logical_width = (float)plot->max_points;
+    if (screen->zlevel > 0)
+    {
+        range = screen->zoom_stack[screen->zlevel].logical_height;
+    }
+
+    // Little fudge just to ensure range stays > 0.0
+    range += 1e-6;
+
     float x = 0.0f;
-    float range = plot->max_value - plot->min_value + 1e-6;
     for (int i = 0; i < plot->npoints; i++)
     {
+        Vector2 pt = { x, points[i] };
         // Map each point onto logical space [0, 1.0)
-        float y = (points[i] - plot->min_value) / range;
-
-        Vector2 xy = { x, (1.0f - y) * screen.height };
+        Vector2 xy = to_pixels(pt, screen);
         plot->points[i] = xy;
         x += dx;
     }
@@ -167,7 +183,7 @@ int main(int argc, char *argv[])
             }
 
             // Only draw the most recent line
-            update_plot(points_buffer, nelements, &plot);
+            update_plot(points_buffer, nelements, &screen, &plot);
         }
 
         // TODO: Render all the data we have to a texture?
