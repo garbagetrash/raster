@@ -3,19 +3,24 @@ import sys
 
 import numpy as np
 
-def real_noise(n):
-    while True:
-        somebytes = np.random.randn(n).astype(np.float32)
-        sys.stdout.buffer.write(somebytes)
+def noise(n):
+    return (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
 
-def noise_psd(n):
-    while True:
-        somebytes = 20 * np.log10(np.abs(np.fft.fft(np.random.randn(n), n)))
-        somebytes = somebytes.astype(np.float32)
-        try:
-            sys.stdout.buffer.write(somebytes)
-        except:
-            break
+def tone(f, n):
+    return np.exp(2j*np.pi*f*np.arange(n))
+
+def psd(x):
+    return 20 * np.log10(np.abs(np.fft.fft(x, len(x))))
 
 if __name__ == "__main__":
-    noise_psd(1024)
+    n = 1024
+    if len(sys.argv) >= 2:
+        n = int(sys.argv[1])
+
+    while True:
+        x = psd(noise(n) + tone(0.01, n))
+        try:
+            sys.stdout.buffer.write(np.real(x).astype(np.float32))
+            sys.stdout.flush()
+        except:
+            break

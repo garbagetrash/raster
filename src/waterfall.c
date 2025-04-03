@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 #include "raylib.h"
 #include "common.h"
@@ -62,7 +63,7 @@ Waterfall new_waterfall(int width, int height)
     {
         for (int x = 0; x < width; x++)
         {
-            idx = (y + width + x) % buffer_size;
+            idx = (y * width + x) % buffer_size;
             pixels[idx] = BLACK;
         }
     }
@@ -86,8 +87,6 @@ void free_waterfall(Waterfall* r)
 // Updates `pixels` by pushing a horizontal line of width pixels
 void push_line(const float* line_of_pixels, Waterfall* waterfall, float* colormap)
 {
-    int idx;
-    int buffer_size = waterfall->width * waterfall->height;
     for (int x = 0; x < waterfall->width; x++)
     {
         float value = line_of_pixels[x];
@@ -123,14 +122,17 @@ void push_line(const float* line_of_pixels, Waterfall* waterfall, float* colorma
 int main(int argc, char *argv[])
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    int frame_size = 1024;
     int c;
     float* colormap = (float*)inferno_srgb_floats;
     char* color_choice = NULL;
 
-    while ((c = getopt(argc, argv, "sf:h:c:")) != -1)
+    while ((c = getopt(argc, argv, "f:c:")) != -1)
     {
         switch (c)
         {
+            case 'f':
+                frame_size = atoi(optarg);
             case 'c':
                 color_choice = optarg;
                 if (strncmp(color_choice, "inferno", 7) == 0) {
@@ -150,19 +152,20 @@ int main(int argc, char *argv[])
         }
     }
 
+    printf("frame size     : %d\n", frame_size);
     printf("colormap choice: %s\n", color_choice);
 
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Waterfall");
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
-    Waterfall waterfall = new_waterfall(screen.width, screen.height);
-    SetTargetFPS(60);
+    Waterfall waterfall = new_waterfall(frame_size, screen.height);
+    SetTargetFPS(120);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
-    float* buffer = (float*)calloc(sizeof(float), screen.width);
+    float* buffer = (float*)calloc(sizeof(float), 16 * frame_size);
 
-    RenderTexture2D rtex = LoadRenderTexture(screen.width, screen.height);
+    RenderTexture2D rtex = LoadRenderTexture(frame_size, screen.height);
     Color* line_of_pixels = (Color*)calloc(sizeof(Color), waterfall.width);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
@@ -170,6 +173,7 @@ int main(int argc, char *argv[])
 
     fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 
+    Vector2 origin = { 0.0f, 0.0f };
     while (!WindowShouldClose())
     {
         // Update
@@ -180,38 +184,44 @@ int main(int argc, char *argv[])
             screen.height = GetScreenHeight();
 
             free_waterfall(&waterfall);
-            waterfall = new_waterfall(screen.width, screen.height);
+            waterfall = new_waterfall(frame_size, screen.height);
 
-            rtex = LoadRenderTexture(screen.width, screen.height);
+            rtex = LoadRenderTexture(frame_size, screen.height);
 
             free(line_of_pixels);
             line_of_pixels = (Color*)calloc(sizeof(Color), waterfall.width);
 
             free(buffer);
-            buffer = (float*)calloc(sizeof(float), screen.width);
+            buffer = (float*)calloc(sizeof(float), 16 * frame_size);
         }
 
-        while (1)
+        int nbytes_ready = 0;
+        // Receive all queued up data and push to Waterfall before rendering frame
+        if (ioctl(0, FIONREAD, &nbytes_ready) == -1)
         {
-            // Receive all queued up data and push to Waterfall before rendering frame
-            ssize_t nbytes = read(0, buffer, sizeof(float)*screen.width);
-            if (nbytes == 0)
-            {
-                // EOF
-                break;
-            } else if (nbytes == -1) {
-                // If we don't have data don't block or bail, just allow loop to go
-                // along so UI remains responsive.
-                if (errno != EAGAIN)
-                {
-                    perror("read");
-                }
-                break;
-            }
-
-            // This also applies colormap
-            push_line(buffer, &waterfall, colormap);
+            perror("ioctl[FIONREAD]");
+            break;
         }
+
+        if (nbytes_ready < sizeof(float)*frame_size) continue;
+
+        ssize_t nbytes = read(0, buffer, 16*sizeof(float)*frame_size);
+        if (nbytes == 0)
+        {
+            // EOF
+            break;
+        } else if (nbytes == -1) {
+            // If we don't have data don't block or bail, just allow loop to go
+            // along so UI remains responsive.
+            if (errno != EAGAIN)
+            {
+                perror("read");
+            }
+            break;
+        }
+
+        // This also applies colormap
+        push_line(buffer, &waterfall, colormap);
 
         // Render all the data we have
         Color* pixels = waterfall.pixels;
@@ -281,8 +291,32 @@ int main(int argc, char *argv[])
             }
         } else {
             // Actual waterfall
-            DrawTexture(rtex.texture, 0, 0, WHITE);
-            DrawLine(0, waterfall.yidx, screen.width, waterfall.yidx, YELLOW);
+            if (screen.zlevel > 0)
+            {
+                // Some zoom to be applied
+                Zoom z0 = screen.zoom_stack[0];
+                Zoom z1 = screen.zoom_stack[screen.zlevel];
+                Vector2 xy = to_pixels((Vector2){ z1.logical_minx, z1.logical_miny }, &screen);
+                float wratio = z1.logical_width / z0.logical_width;
+                float hratio = z1.logical_height / z0.logical_height;
+                Rectangle texture_patch = { xy.x, xy.y, screen.width * wratio, screen.height * hratio };
+                NPatchInfo patch_info = {
+                    texture_patch, 0, 0, 0, 0, NPATCH_NINE_PATCH
+                };
+                DrawTextureNPatch(
+                        rtex.texture,
+                        patch_info,
+                        (Rectangle) { 0.0f, 0.0f, screen.width, screen.height },
+                        origin,
+                        0.0f,
+                        WHITE
+                );
+                float y = waterfall.yidx / hratio;
+                DrawLine(0, y, screen.width, y, YELLOW);
+            } else {
+                DrawTexture(rtex.texture, 0, 0, WHITE);
+                DrawLine(0, waterfall.yidx, screen.width, waterfall.yidx, YELLOW);
+            }
 
             // Draw tagged positions
             draw_tags(global_tags, ntags, &screen);
