@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <float.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,97 @@ size_t ntags = 0;
 ActiveScreen active_screen = MAIN;
 
 
+typedef struct {
+  uint64_t num_frames;
+  uint32_t frame_size;
+  uint32_t bytes_per_element;
+  uint64_t read_ptr;
+  uint64_t write_ptr;
+  uint64_t frame_ptr; // points to element within a frame
+  bool hit_eof;
+  char* buffer;
+} ReadBuffer;
+
+ReadBuffer read_buffer;
+
+ReadBuffer* new_read_buffer(uint32_t frame_size, uint64_t num_frames)
+{
+    ReadBuffer* output = (ReadBuffer*)malloc(sizeof(ReadBuffer));
+    output->frame_size = frame_size;
+    output->num_frames = num_frames;
+    output->bytes_per_element = sizeof(float);
+    output->write_ptr = 0;
+    output->read_ptr = 0;
+    output->frame_ptr = 0;
+    output->hit_eof = false;
+    output->buffer = (char*)malloc(num_frames * frame_size * output->bytes_per_element);
+    return output;
+}
+
+void free_read_buffer(ReadBuffer* rb)
+{
+    if (rb != NULL)
+    {
+        free(rb->buffer);
+    }
+    free(rb);
+}
+
+void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
+{
+    uint64_t idx = rb->write_ptr % rb->num_frames;
+    char* ptr = &(rb->buffer[idx*rb->frame_size*rb->bytes_per_element]);
+    memcpy(ptr, data, nbytes);
+    uint64_t num_new_frames = nbytes / (rb->bytes_per_element * rb->frame_size);
+    rb->frame_ptr += nbytes % (rb->bytes_per_element * rb->frame_size);
+    if (rb->frame_ptr > rb_num_frames)
+    {
+        num_new_frames += rb->frame_ptr / rb->frame_size;
+        rb->frame_ptr %= rb->frame_size;
+    }
+    rb->write_ptr += num_new_frames;
+
+    // Force update read pointer if it's falling behind
+    if (rb->read_ptr < rb->write_ptr - rb->num_frames)
+    {
+        rb->read_ptr = rb->write_ptr - rb->num_frames;
+    }
+}
+
+// Read all complete frames from buffer in one go
+void read_all_frames_from_buffer(const ReadBuffer* rb, char* output, size_t* nbytes)
+{
+    size_t nframes = rb->write_ptr - rb->read_ptr;
+    *nbytes = nframes * rb->frame_size * rb->bytes_per_element;
+    if (nbytes > 0) {
+        memcpy(output, (void*)&(rb->buffer[rb->read_ptr]), *nbytes);
+        rb->read_ptr += nframes;
+    }
+}
+
+void* spin_read()
+{
+    ssize_t nbytes = 0;
+    char* tmp = (char*)calloc(1, 65536);
+    while (1)
+    {
+        nbytes = read(0, tmp, 65536);
+        if (nbytes == 0)
+        {
+            // EOF
+            read_buffer.hit_eof = true;
+            break;
+        } else if (nbytes == -1) {
+            perror("read");
+            break;
+        }
+        write_to_buffer(tmp, nbytes, &read_buffer);
+    }
+    free(tmp);
+    return NULL;
+}
+
+
 // TODO: Implement zoom on actual waterfall/texture
 typedef struct Waterfall {
     int width;
@@ -69,11 +161,11 @@ Waterfall new_waterfall(int width, int height)
     }
 
     Waterfall r = {
-        .width = width,   
-        .height = height,   
+        .width = width,
+        .height = height,
         .min_value = FLT_MAX,
         .max_value = FLT_MIN,
-        .yidx = 0,   
+        .yidx = 0,
         .pixels = pixels
     };
     return r;
@@ -155,6 +247,8 @@ int main(int argc, char *argv[])
     printf("frame size     : %d\n", frame_size);
     printf("colormap choice: %s\n", color_choice);
 
+    read_buffer = new_read_buffer(frame_size, 16);
+
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Waterfall");
     screen.width = GetScreenWidth();
@@ -195,33 +289,22 @@ int main(int argc, char *argv[])
             buffer = (float*)calloc(sizeof(float), 16 * frame_size);
         }
 
-        int nbytes_ready = 0;
-        // Receive all queued up data and push to Waterfall before rendering frame
-        if (ioctl(0, FIONREAD, &nbytes_ready) == -1)
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, &spin_read, NULL) != 0)
         {
-            perror("ioctl[FIONREAD]");
-            break;
+            perror("pthread_create");
+            return -1;
         }
 
-        if (nbytes_ready < sizeof(float)*frame_size) continue;
+        size_t nbytes = 0;
+        read_all_frames_from_buffer(&read_buffer, (char*)buffer, &nbytes)
+        size_t nframes = nbytes / (read_buffer->frame_size * fread_buffer->bytes_per_element);
 
-        ssize_t nbytes = read(0, buffer, 16*sizeof(float)*frame_size);
-        if (nbytes == 0)
+        for (size_t i = 0; i < nframes; i++)
         {
-            // EOF
-            break;
-        } else if (nbytes == -1) {
-            // If we don't have data don't block or bail, just allow loop to go
-            // along so UI remains responsive.
-            if (errno != EAGAIN)
-            {
-                perror("read");
-            }
-            break;
+            // This also applies colormap
+            push_line(&(buffer[i*read_buffer->frame_size]), &waterfall, colormap);
         }
-
-        // This also applies colormap
-        push_line(buffer, &waterfall, colormap);
 
         // Render all the data we have
         Color* pixels = waterfall.pixels;
@@ -339,12 +422,23 @@ int main(int argc, char *argv[])
     fcntl(0, F_SETFL, fcntl(0, F_GETFL) | ~O_NONBLOCK);
 
     // Clean up
+    if (pthread_cancel(tid) != 0)
+    {
+        perror("pthread_cancel");
+        return -1;
+    }
+    if (pthread_join(tid, NULL) != 0)
+    {
+        perror("pthread_join");
+        return -1;
+    }
     free(line_of_pixels);
     free_waterfall(&waterfall);
     UnloadRenderTexture(rtex);
     CloseWindow();
     free(buffer);
     UnloadFont(font);
+    free_read_buffer(&read_buffer);
 
     return 0;
 }
