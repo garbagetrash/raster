@@ -1,5 +1,4 @@
 #include <errno.h>
-#include <fcntl.h>
 #include <float.h>
 #include <math.h>
 #include <pthread.h>
@@ -48,14 +47,14 @@ typedef struct {
   uint64_t num_frames;
   uint32_t frame_size;
   uint32_t bytes_per_element;
-  uint64_t read_ptr;
-  uint64_t write_ptr;
-  uint64_t frame_ptr; // points to element within a frame
+  uint64_t read_cntr;
+  uint64_t write_cntr;
+  uint64_t frame_cntr; // points to element within a frame
   bool hit_eof;
   char* buffer;
 } ReadBuffer;
 
-ReadBuffer read_buffer;
+ReadBuffer* read_buffer = NULL;
 
 ReadBuffer* new_read_buffer(uint32_t frame_size, uint64_t num_frames)
 {
@@ -63,9 +62,9 @@ ReadBuffer* new_read_buffer(uint32_t frame_size, uint64_t num_frames)
     output->frame_size = frame_size;
     output->num_frames = num_frames;
     output->bytes_per_element = sizeof(float);
-    output->write_ptr = 0;
-    output->read_ptr = 0;
-    output->frame_ptr = 0;
+    output->write_cntr = 0;
+    output->read_cntr = 0;
+    output->frame_cntr = 0;
     output->hit_eof = false;
     output->buffer = (char*)malloc(num_frames * frame_size * output->bytes_per_element);
     return output;
@@ -82,55 +81,81 @@ void free_read_buffer(ReadBuffer* rb)
 
 void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
 {
-    uint64_t idx = rb->write_ptr % rb->num_frames;
-    char* ptr = &(rb->buffer[idx*rb->frame_size*rb->bytes_per_element]);
-    memcpy(ptr, data, nbytes);
-    uint64_t num_new_frames = nbytes / (rb->bytes_per_element * rb->frame_size);
-    rb->frame_ptr += nbytes % (rb->bytes_per_element * rb->frame_size);
-    if (rb->frame_ptr > rb_num_frames)
+    // bytes until end of read buffer
+    ssize_t bytes_left = rb->frame_size * (rb->num_frames - rb->write_cntr % rb->num_frames) * rb->bytes_per_element;
+    bytes_left -= rb->frame_cntr * rb->bytes_per_element;
+
+    char* ptr = &(rb->buffer[((rb->write_cntr%rb->num_frames)*rb->frame_size+rb->frame_cntr)*rb->bytes_per_element]);
+    if (nbytes > bytes_left)
     {
-        num_new_frames += rb->frame_ptr / rb->frame_size;
-        rb->frame_ptr %= rb->frame_size;
+        memcpy(ptr, data, bytes_left);
+        ssize_t bytes_left2 = nbytes - bytes_left;
+        memcpy(rb->buffer, &(data[bytes_left]), bytes_left2);
+    } else {
+        memcpy(ptr, data, nbytes);
     }
-    rb->write_ptr += num_new_frames;
+
+    uint64_t num_new_frames = nbytes / (rb->bytes_per_element * rb->frame_size);
+    rb->frame_cntr += nbytes % (rb->bytes_per_element * rb->frame_size);
+    if (rb->frame_cntr > rb->num_frames)
+    {
+        num_new_frames += rb->frame_cntr / rb->frame_size;
+        rb->frame_cntr %= rb->frame_size;
+    }
+    rb->write_cntr += num_new_frames;
 
     // Force update read pointer if it's falling behind
-    if (rb->read_ptr < rb->write_ptr - rb->num_frames)
+    if (rb->read_cntr < rb->write_cntr - rb->num_frames)
     {
-        rb->read_ptr = rb->write_ptr - rb->num_frames;
+        rb->read_cntr = rb->write_cntr - rb->num_frames;
     }
+    //printf("wrote: %lu\n bytes", nbytes);
 }
 
 // Read all complete frames from buffer in one go
-void read_all_frames_from_buffer(const ReadBuffer* rb, char* output, size_t* nbytes)
+void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t* nbytes)
 {
-    size_t nframes = rb->write_ptr - rb->read_ptr;
+    size_t nframes = rb->write_cntr - rb->read_cntr;
     *nbytes = nframes * rb->frame_size * rb->bytes_per_element;
     if (nbytes > 0) {
-        memcpy(output, (void*)&(rb->buffer[rb->read_ptr]), *nbytes);
-        rb->read_ptr += nframes;
+        ssize_t fidx = rb->read_cntr % rb->num_frames;
+        ssize_t bytes_left = (rb->num_frames - fidx) * rb->frame_size * rb->bytes_per_element;
+        if (bytes_left < *nbytes)
+        {
+            memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), bytes_left);
+            memcpy(&(output[bytes_left]), (void*)&(rb->buffer), *nbytes - bytes_left);
+        } else {
+            // Not split across read_buffer
+            memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), *nbytes);
+        }
+        rb->read_cntr += nframes;
     }
 }
 
 void* spin_read()
 {
+    // Pipes are 65536 bytes max by default.
     ssize_t nbytes = 0;
     char* tmp = (char*)calloc(1, 65536);
     while (1)
     {
+        //printf("reading...\n");
         nbytes = read(0, tmp, 65536);
+        //printf("read %li bytes!\n", nbytes);
         if (nbytes == 0)
         {
             // EOF
-            read_buffer.hit_eof = true;
+            read_buffer->hit_eof = true;
+            printf("hit EOF\n");
             break;
         } else if (nbytes == -1) {
             perror("read");
             break;
         }
-        write_to_buffer(tmp, nbytes, &read_buffer);
+        write_to_buffer(tmp, nbytes, read_buffer);
     }
     free(tmp);
+
     return NULL;
 }
 
@@ -254,7 +279,7 @@ int main(int argc, char *argv[])
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
     Waterfall waterfall = new_waterfall(frame_size, screen.height);
-    SetTargetFPS(120);
+    SetTargetFPS(60);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
     float* buffer = (float*)calloc(sizeof(float), 16 * frame_size);
@@ -265,7 +290,12 @@ int main(int argc, char *argv[])
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
 
-    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, &spin_read, NULL) != 0)
+    {
+        perror("pthread_create");
+        return -1;
+    }
 
     Vector2 origin = { 0.0f, 0.0f };
     while (!WindowShouldClose())
@@ -289,20 +319,14 @@ int main(int argc, char *argv[])
             buffer = (float*)calloc(sizeof(float), 16 * frame_size);
         }
 
-        pthread_t tid;
-        if (pthread_create(&tid, NULL, &spin_read, NULL) != 0)
-        {
-            perror("pthread_create");
-            return -1;
-        }
-
         size_t nbytes = 0;
-        read_all_frames_from_buffer(&read_buffer, (char*)buffer, &nbytes)
-        size_t nframes = nbytes / (read_buffer->frame_size * fread_buffer->bytes_per_element);
+        read_all_frames_from_buffer(read_buffer, (char*)buffer, &nbytes);
+        size_t nframes = nbytes / (read_buffer->frame_size * read_buffer->bytes_per_element);
 
         for (size_t i = 0; i < nframes; i++)
         {
             // This also applies colormap
+            printf("%f\n", buffer[i*read_buffer->frame_size]);
             push_line(&(buffer[i*read_buffer->frame_size]), &waterfall, colormap);
         }
 
@@ -419,8 +443,6 @@ int main(int argc, char *argv[])
         EndDrawing();
     }
 
-    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | ~O_NONBLOCK);
-
     // Clean up
     if (pthread_cancel(tid) != 0)
     {
@@ -438,7 +460,7 @@ int main(int argc, char *argv[])
     CloseWindow();
     free(buffer);
     UnloadFont(font);
-    free_read_buffer(&read_buffer);
+    free_read_buffer(read_buffer);
 
     return 0;
 }
