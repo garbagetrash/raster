@@ -82,16 +82,21 @@ void free_read_buffer(ReadBuffer* rb)
 void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
 {
     // bytes until end of read buffer
+    size_t read_buffer_size = rb->num_frames * rb->frame_size * rb->bytes_per_element;
     ssize_t bytes_left = rb->frame_size * (rb->num_frames - rb->write_cntr % rb->num_frames) * rb->bytes_per_element;
     bytes_left -= rb->frame_cntr * rb->bytes_per_element;
 
     char* ptr = &(rb->buffer[((rb->write_cntr%rb->num_frames)*rb->frame_size+rb->frame_cntr)*rb->bytes_per_element]);
-    if (nbytes > bytes_left)
-    {
+    if (nbytes >= read_buffer_size) {
+        // If more than what fits in the entire read buffer, then just grab
+        // what we can.
+        memcpy(rb->buffer, &(data[nbytes - read_buffer_size]), read_buffer_size);
+    } else if (nbytes > bytes_left) {
+        // Will roll over the read buffer
         memcpy(ptr, data, bytes_left);
-        ssize_t bytes_left2 = nbytes - bytes_left;
-        memcpy(rb->buffer, &(data[bytes_left]), bytes_left2);
+        memcpy(rb->buffer, &(data[bytes_left]), (ssize_t)nbytes - bytes_left);
     } else {
+        // Fits in current buffer without roll over
         memcpy(ptr, data, nbytes);
     }
 
@@ -109,7 +114,6 @@ void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
     {
         rb->read_cntr = rb->write_cntr - rb->num_frames;
     }
-    //printf("wrote: %lu\n bytes", nbytes);
 }
 
 // Read all complete frames from buffer in one go
@@ -123,7 +127,7 @@ void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t* nbytes)
         if (bytes_left < *nbytes)
         {
             memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), bytes_left);
-            memcpy(&(output[bytes_left]), (void*)&(rb->buffer), *nbytes - bytes_left);
+            memcpy(&(output[bytes_left]), (void*)rb->buffer, *nbytes - bytes_left);
         } else {
             // Not split across read_buffer
             memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), *nbytes);
@@ -139,9 +143,7 @@ void* spin_read()
     char* tmp = (char*)calloc(1, 65536);
     while (1)
     {
-        //printf("reading...\n");
         nbytes = read(0, tmp, 65536);
-        //printf("read %li bytes!\n", nbytes);
         if (nbytes == 0)
         {
             // EOF
@@ -326,7 +328,7 @@ int main(int argc, char *argv[])
         for (size_t i = 0; i < nframes; i++)
         {
             // This also applies colormap
-            printf("%f\n", buffer[i*read_buffer->frame_size]);
+            //printf("%f\n", buffer[i*read_buffer->frame_size]);
             push_line(&(buffer[i*read_buffer->frame_size]), &waterfall, colormap);
         }
 
