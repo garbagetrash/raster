@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <float.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,11 +42,42 @@ size_t ntags = 0;
 ActiveScreen active_screen = MAIN;
 
 
+// Global ReadBuffer and mutex
+ReadBuffer* read_buffer = NULL;
+const size_t N_FRAMES = 64;
+pthread_mutex_t read_buffer_mutex;
+
+void* spin_read()
+{
+    // Pipes are 65536 bytes max by default.
+    ssize_t nbytes = 0;
+    char* tmp = (char*)calloc(1, 65536);
+    while (1)
+    {
+        nbytes = read(0, tmp, 65536);
+        if (nbytes == 0)
+        {
+            // EOF
+            read_buffer->hit_eof = true;
+            printf("hit EOF\n");
+            break;
+        } else if (nbytes == -1) {
+            perror("read");
+            break;
+        }
+        pthread_mutex_lock(&read_buffer_mutex);
+        write_to_buffer(tmp, nbytes, read_buffer);
+        pthread_mutex_unlock(&read_buffer_mutex);
+    }
+    free(tmp);
+    return NULL;
+}
+
+
 typedef struct Plot {
     float min_value;
     float max_value;
     int32_t npoints;
-    int32_t max_points;
     Vector2* points;
 } Plot;
 
@@ -57,7 +89,6 @@ Plot new_plot(uint32_t npoints)
         .min_value = FLT_MAX,
         .max_value = FLT_MIN,
         .npoints = npoints,
-        .max_points = npoints,
         .points = buffer
     };
     return p;
@@ -72,14 +103,8 @@ void free_plot(Plot* p)
 }
 
 // Shallow copy, just passing the pointer along.
-void update_plot(const float* points, const uint64_t npoints, Screen* screen, Plot* plot)
+void update_plot(const float* points, Screen* screen, Plot* plot)
 {
-    plot->npoints = npoints;
-    if (plot->npoints > plot->max_points) {
-        plot->max_points = plot->npoints;
-    }
-    float dx = (float)screen->width / (plot->npoints - 1);
-
     // Update plot range
     for (int i = 0; i < plot->npoints; i++)
     {
@@ -98,7 +123,7 @@ void update_plot(const float* points, const uint64_t npoints, Screen* screen, Pl
     float range = plot->max_value - plot->min_value;
     screen->zoom_stack[0].logical_height = range;
     screen->zoom_stack[0].logical_minx = 0.0;
-    screen->zoom_stack[0].logical_width = (float)plot->max_points;
+    screen->zoom_stack[0].logical_width = (float)plot->npoints;
     if (screen->zlevel > 0)
     {
         range = screen->zoom_stack[screen->zlevel].logical_height;
@@ -107,37 +132,57 @@ void update_plot(const float* points, const uint64_t npoints, Screen* screen, Pl
     // Little fudge just to ensure range stays > 0.0
     range += 1e-6;
 
-    float x = 0.0f;
     for (int i = 0; i < plot->npoints; i++)
     {
-        Vector2 pt = { x, points[i] };
+        Vector2 pt = { (float)i, points[i] };
         // Map each point onto logical space [0, 1.0)
         Vector2 xy = to_pixels(pt, screen);
         plot->points[i] = xy;
-        x += dx;
     }
 }
 
 int main(int argc, char *argv[])
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    int frame_size = 1024;
+    int c;
+
+    while ((c = getopt(argc, argv, "f:")) != -1)
+    {
+        switch (c)
+        {
+            case 'f':
+                frame_size = atoi(optarg);
+                break;
+            default:
+                abort();
+        }
+    }
+
+    printf("frame size     : %d\n", frame_size);
+
+    read_buffer = new_read_buffer(frame_size, N_FRAMES);
 
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Plot");
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
-    Plot plot = new_plot(screen.width);
+    Plot plot = new_plot(frame_size);
     SetTargetFPS(60);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
-    float* points_buffer = (float*)calloc(sizeof(float), screen.width);
+    float* points_buffer = (float*)calloc(sizeof(float), frame_size);
 
-    RenderTexture2D rtex = LoadRenderTexture(screen.width, screen.height);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
 
-    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, &spin_read, NULL) != 0)
+    {
+        perror("pthread_create");
+        return -1;
+    }
 
     while (!WindowShouldClose())
     {
@@ -147,48 +192,18 @@ int main(int argc, char *argv[])
             // Window resized, so reset width/height
             screen.width = GetScreenWidth();
             screen.height = GetScreenHeight();
-
-            free_plot(&plot);
-            plot = new_plot(screen.width);
-
-            free(points_buffer);
-            points_buffer = (float*)calloc(sizeof(float), screen.width);
-
-            rtex = LoadRenderTexture(screen.width, screen.height);
         }
 
-        int nelements = 0;
-        while (1)
-        {
-            // Receive all queued up data and push to Raster before rendering frame
-            ssize_t nbytes = read(0, points_buffer, sizeof(float)*screen.width);
-            if (nbytes == 0)
-            {
-                // EOF
-                break;
-            } else if (nbytes == -1) {
-                if (errno == EAGAIN)
-                {
-                    break;
-                } else {
-                    // Error
-                    perror("read");
-                    break;
-                }
-            }
-            nelements = nbytes / sizeof(float);
-            if (nelements > screen.width) {
-                // Received data got truncated down to buffer size
-                nelements = screen.width;
-            }
+        size_t nbytes = 0;
+        pthread_mutex_lock(&read_buffer_mutex);
+        read_all_frames_from_buffer(read_buffer, (char*)points_buffer, frame_size * sizeof(float), &nbytes);
+        pthread_mutex_unlock(&read_buffer_mutex);
+        size_t nframes = nbytes / (read_buffer->frame_size * read_buffer->bytes_per_element);
 
-            // Only draw the most recent line
-            update_plot(points_buffer, nelements, &screen, &plot);
+        // Only draw the most recent line
+        if (nframes > 0) {
+            update_plot(points_buffer, &screen, &plot);
         }
-
-        // TODO: Render all the data we have to a texture?
-        //Color* pixels = plot.pixels;
-        //UpdateTexture(rtex.texture, pixels);
 
         Vector2 mouse_pos = GetMousePosition();
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -278,11 +293,21 @@ int main(int argc, char *argv[])
     fcntl(0, F_SETFL, fcntl(0, F_GETFL) | ~O_NONBLOCK);
 
     // Clean up
+    if (pthread_cancel(tid) != 0)
+    {
+        perror("pthread_cancel");
+        return -1;
+    }
+    if (pthread_join(tid, NULL) != 0)
+    {
+        perror("pthread_join");
+        return -1;
+    }
     free(points_buffer);
     free_plot(&plot);
-    UnloadRenderTexture(rtex);
     CloseWindow();
     UnloadFont(font);
+    free_read_buffer(read_buffer);
 
     return 0;
 }

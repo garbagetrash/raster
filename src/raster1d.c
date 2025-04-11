@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <float.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,37 @@ typedef enum {
 Tag global_tags[16] = { 0 };
 size_t ntags = 0;
 ActiveScreen active_screen = MAIN;
+
+
+// Global ReadBuffer and mutex
+ReadBuffer* read_buffer = NULL;
+pthread_mutex_t read_buffer_mutex;
+
+void* spin_read()
+{
+    // Pipes are 65536 bytes max by default.
+    ssize_t nbytes = 0;
+    char* tmp = (char*)calloc(1, 65536);
+    while (1)
+    {
+        nbytes = read(0, tmp, 65536);
+        if (nbytes == 0)
+        {
+            // EOF
+            read_buffer->hit_eof = true;
+            printf("hit EOF\n");
+            break;
+        } else if (nbytes == -1) {
+            perror("read");
+            break;
+        }
+        pthread_mutex_lock(&read_buffer_mutex);
+        write_to_buffer(tmp, nbytes, read_buffer);
+        pthread_mutex_unlock(&read_buffer_mutex);
+    }
+    free(tmp);
+    return NULL;
+}
 
 
 typedef struct Raster1d {
@@ -140,23 +172,46 @@ int main(int argc, char *argv[])
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
 
+    int frame_size = 1024;
+    int c;
+
+    while ((c = getopt(argc, argv, "f:")) != -1)
+    {
+        switch (c)
+        {
+            case 'f':
+                frame_size = atoi(optarg);
+                break;
+            default:
+                abort();
+        }
+    }
+
+    printf("frame size     : %d\n", frame_size);
+    read_buffer = new_read_buffer(frame_size, NTRACES);
+
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Raster1d");
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
-    Raster1d raster1d = new_raster1d(NTRACES, TRACE_WIDTH, &screen);
+    Raster1d raster1d = new_raster1d(NTRACES, frame_size, &screen);
     screen.zoom_stack[0].logical_width = raster1d.trace_width;
     screen.zoom_stack[0].logical_minx = 0.0f;
     SetTargetFPS(60);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
-    float* buffer = (float*)calloc(sizeof(float), screen.width);
+    float* buffer = (float*)calloc(sizeof(float), frame_size);
 
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
 
-    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, &spin_read, NULL) != 0)
+    {
+        perror("pthread_create");
+        return -1;
+    }
 
     while (!WindowShouldClose())
     {
@@ -168,32 +223,18 @@ int main(int argc, char *argv[])
             screen.height = GetScreenHeight();
 
             free_raster1d(&raster1d);
-            raster1d = new_raster1d(NTRACES, TRACE_WIDTH, &screen);
+            raster1d = new_raster1d(NTRACES, frame_size, &screen);
             screen.zoom_stack[0].logical_width = raster1d.trace_width;
-
-            free(buffer);
-            buffer = (float*)calloc(sizeof(float), screen.width);
         }
 
-        while (1)
-        {
-            // Receive all queued up data and push to Raster1d before rendering frame
-            ssize_t nbytes = read(0, buffer, sizeof(float) * screen.width);
-            if (nbytes == 0)
-            {
-                // EOF
-                break;
-            } else if (nbytes == -1) {
-                // If we don't have data don't block or bail, just allow loop to go
-                // along so UI remains responsive.
-                if (errno != EAGAIN)
-                {
-                    perror("read");
-                }
-                break;
-            }
+        size_t nbytes = 0;
+        pthread_mutex_lock(&read_buffer_mutex);
+        read_all_frames_from_buffer(read_buffer, (char*)buffer, frame_size * sizeof(float), &nbytes);
+        pthread_mutex_unlock(&read_buffer_mutex);
+        size_t nframes = nbytes / (read_buffer->frame_size * read_buffer->bytes_per_element);
 
-            // This also applies colormap
+        // This also applies colormap
+        if (nframes > 0) {
             push_trace(buffer, &raster1d, &screen);
             screen.zoom_stack[0].logical_miny = raster1d.min_value;
             screen.zoom_stack[0].logical_height = raster1d.max_value - raster1d.min_value;
@@ -284,13 +325,22 @@ int main(int argc, char *argv[])
         EndDrawing();
     }
 
-    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | ~O_NONBLOCK);
-
     // Clean up
+    if (pthread_cancel(tid) != 0)
+    {
+        perror("pthread_cancel");
+        return -1;
+    }
+    if (pthread_join(tid, NULL) != 0)
+    {
+        perror("pthread_join");
+        return -1;
+    }
     free_raster1d(&raster1d);
     CloseWindow();
     free(buffer);
     UnloadFont(font);
+    free_read_buffer(read_buffer);
 
     return 0;
 }

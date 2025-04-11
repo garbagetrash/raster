@@ -81,3 +81,20 @@ void draw_mouse_drag_rectangle(Vector2 click_start, Vector2 mouse_pos, Screen* s
 void draw_info_panel(Screen* screen);
 void draw_tags(Tag* tags, size_t ntags, Screen* screen);
 void push_zoom_stack(Screen* screen, Vector2 click_start, Vector2 click_end);
+
+// ReadBuffer
+typedef struct {
+  uint64_t num_frames;
+  uint32_t frame_size;
+  uint32_t bytes_per_element;
+  uint64_t read_cntr;
+  uint64_t write_cntr;
+  uint64_t frame_cntr; // points to element within a frame
+  bool hit_eof;
+  char* buffer;
+} ReadBuffer;
+
+ReadBuffer* new_read_buffer(uint32_t frame_size, uint64_t num_frames);
+void free_read_buffer(ReadBuffer* rb);
+void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb);
+void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t output_capacity, size_t* nbytes);

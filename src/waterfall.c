@@ -38,120 +38,16 @@ typedef enum {
 } ActiveScreen;
 
 
+// Global Tags
 Tag global_tags[16] = { 0 };
 size_t ntags = 0;
 ActiveScreen active_screen = MAIN;
 
 
-typedef struct {
-  uint64_t num_frames;
-  uint32_t frame_size;
-  uint32_t bytes_per_element;
-  uint64_t read_cntr;
-  uint64_t write_cntr;
-  uint64_t frame_cntr; // points to element within a frame
-  bool hit_eof;
-  char* buffer;
-} ReadBuffer;
-
+// Global ReadBuffer and mutex
 ReadBuffer* read_buffer = NULL;
 const size_t N_FRAMES = 64;
 pthread_mutex_t read_buffer_mutex;
-
-ReadBuffer* new_read_buffer(uint32_t frame_size, uint64_t num_frames)
-{
-    ReadBuffer* output = (ReadBuffer*)malloc(sizeof(ReadBuffer));
-    output->frame_size = frame_size;
-    output->num_frames = num_frames;
-    output->bytes_per_element = sizeof(float);
-    output->write_cntr = 0;
-    output->read_cntr = 0;
-    output->frame_cntr = 0;
-    output->hit_eof = false;
-    output->buffer = (char*)malloc(num_frames * frame_size * output->bytes_per_element);
-    return output;
-}
-
-void free_read_buffer(ReadBuffer* rb)
-{
-    if (rb != NULL)
-    {
-        free(rb->buffer);
-    }
-    free(rb);
-}
-
-void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
-{
-    pthread_mutex_lock(&read_buffer_mutex);
-
-    // bytes until end of read buffer
-    size_t read_buffer_size = rb->num_frames * rb->frame_size * rb->bytes_per_element;
-    ssize_t bytes_left = rb->frame_size * (rb->num_frames - rb->write_cntr % rb->num_frames) * rb->bytes_per_element;
-    bytes_left -= rb->frame_cntr * rb->bytes_per_element;
-
-    char* ptr = &(rb->buffer[((rb->write_cntr%rb->num_frames)*rb->frame_size+rb->frame_cntr)*rb->bytes_per_element]);
-    if (nbytes >= read_buffer_size) {
-        // If more than what fits in the entire read buffer, then just grab
-        // what we can.
-        memcpy(rb->buffer, &(data[nbytes - read_buffer_size]), read_buffer_size);
-    } else if (nbytes > bytes_left) {
-        // Will roll over the read buffer
-        memcpy(ptr, data, bytes_left);
-        memcpy(rb->buffer, &(data[bytes_left]), (ssize_t)nbytes - bytes_left);
-    } else {
-        // Fits in current buffer without roll over
-        memcpy(ptr, data, nbytes);
-    }
-
-    uint64_t num_new_frames = nbytes / (rb->bytes_per_element * rb->frame_size);
-    rb->frame_cntr += nbytes % (rb->bytes_per_element * rb->frame_size);
-    if (rb->frame_cntr > rb->num_frames)
-    {
-        num_new_frames += rb->frame_cntr / rb->frame_size;
-        rb->frame_cntr %= rb->frame_size;
-    }
-    rb->write_cntr += num_new_frames;
-
-    // Force update read pointer if it's falling behind
-    if (rb->write_cntr > rb->num_frames && rb->read_cntr < rb->write_cntr - rb->num_frames)
-    {
-        rb->read_cntr = rb->write_cntr - rb->num_frames;
-    }
-
-    pthread_mutex_unlock(&read_buffer_mutex);
-}
-
-// Read all complete frames from buffer in one go
-void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t output_capacity, size_t* nbytes)
-{
-    pthread_mutex_lock(&read_buffer_mutex);
-    size_t nframes = rb->write_cntr - rb->read_cntr;
-    if (nframes > rb->num_frames) {
-        printf("write_cntr    : %lu\n", rb->write_cntr);
-        printf("read_cntr     : %lu\n", rb->read_cntr);
-        printf("nframes       : %lu\n", nframes);
-        printf("rb->num_frames: %lu\n", rb->num_frames);
-        fprintf(stderr, "shouldn't happen");
-        exit(-1);
-    }
-    *nbytes = nframes * rb->frame_size * rb->bytes_per_element;
-    if (nbytes > 0) {
-        ssize_t fidx = rb->read_cntr % rb->num_frames;
-        ssize_t bytes_left = (rb->num_frames - fidx) * rb->frame_size * rb->bytes_per_element;
-        if (*nbytes >= output_capacity) {
-            memcpy(output, &(rb->buffer[*nbytes - output_capacity]), output_capacity);
-        } else if (bytes_left < *nbytes) {
-            memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), bytes_left);
-            memcpy(&(output[bytes_left]), (void*)rb->buffer, *nbytes - bytes_left);
-        } else {
-            // Not split across read_buffer
-            memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), *nbytes);
-        }
-        rb->read_cntr += nframes;
-    }
-    pthread_mutex_unlock(&read_buffer_mutex);
-}
 
 void* spin_read()
 {
@@ -171,10 +67,11 @@ void* spin_read()
             perror("read");
             break;
         }
+        pthread_mutex_lock(&read_buffer_mutex);
         write_to_buffer(tmp, nbytes, read_buffer);
+        pthread_mutex_unlock(&read_buffer_mutex);
     }
     free(tmp);
-
     return NULL;
 }
 
@@ -269,6 +166,7 @@ int main(int argc, char *argv[])
         {
             case 'f':
                 frame_size = atoi(optarg);
+                break;
             case 'c':
                 color_choice = optarg;
                 if (strncmp(color_choice, "inferno", 7) == 0) {
@@ -335,7 +233,9 @@ int main(int argc, char *argv[])
         }
 
         size_t nbytes = 0;
+        pthread_mutex_lock(&read_buffer_mutex);
         read_all_frames_from_buffer(read_buffer, (char*)buffer, N_FRAMES * frame_size * sizeof(float), &nbytes);
+        pthread_mutex_unlock(&read_buffer_mutex);
         size_t nframes = nbytes / (read_buffer->frame_size * read_buffer->bytes_per_element);
 
         for (size_t i = 0; i < nframes; i++)
