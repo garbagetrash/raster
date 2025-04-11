@@ -10,10 +10,12 @@
 
 #include "raylib.h"
 #include "common.h"
+#include "grayscale_colormap.h"
+#include "inferno_colormap.h"
+#include "viridis_colormap.h"
+#include "turbo_colormap.h"
 
 
-const int NTRACES = 64;
-const int TRACE_WIDTH = 256;
 Screen screen = {
     .width = 640,
     .height = 480,
@@ -153,7 +155,7 @@ void push_trace(const float* trace, Raster1d* raster1d, Screen* screen)
     raster1d->tidx %= raster1d->ntraces;
 }
 
-void draw_raster1d(Raster1d* raster1d)
+void draw_raster1d(Raster1d* raster1d, float* colormap)
 {
     float dvalue = 255.0 / raster1d->ntraces;
     int idx = raster1d->tidx;
@@ -161,7 +163,13 @@ void draw_raster1d(Raster1d* raster1d)
     {
         int value = (int)((i + 1) * dvalue);
         //Color c = { value, value, value, 255 };
-        Color c = { 255, 255, 255, value };
+        //Color c = { 255, 255, 255, value };
+        Color c = {
+            255 * colormap[3 * value],
+            255 * colormap[3 * value + 1],
+            255 * colormap[3 * value + 2],
+            255
+        };
         DrawLineStrip(&(raster1d->traces[raster1d->trace_width * idx]), raster1d->trace_width, c);
         idx++;
         idx %= raster1d->ntraces;
@@ -173,14 +181,34 @@ int main(int argc, char *argv[])
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
 
     int frame_size = 1024;
+    int n_traces = 64;
+    float* colormap = (float*)viridis_srgb_floats;
+    char* color_choice = NULL;
     int c;
 
-    while ((c = getopt(argc, argv, "f:")) != -1)
+    while ((c = getopt(argc, argv, "f:n:c:")) != -1)
     {
         switch (c)
         {
             case 'f':
                 frame_size = atoi(optarg);
+                break;
+            case 'n':
+                n_traces = atoi(optarg);
+                break;
+            case 'c':
+                color_choice = optarg;
+                if (strncmp(color_choice, "inferno", 7) == 0) {
+                    colormap = (float*)inferno_srgb_floats;
+                } else if (strncmp(color_choice, "viridis", 7) == 0) {
+                    colormap = (float*)viridis_srgb_floats;
+                } else if (strncmp(color_choice, "turbo", 5) == 0) {
+                    colormap = (float*)turbo_srgb_floats;
+                } else if (strncmp(color_choice, "gray", 4) == 0) {
+                    colormap = (float*)grayscale_srgb_floats;
+                } else if (strncmp(color_choice, "grey", 4) == 0) {
+                    colormap = (float*)grayscale_srgb_floats;
+                }
                 break;
             default:
                 abort();
@@ -188,18 +216,22 @@ int main(int argc, char *argv[])
     }
 
     printf("frame size     : %d\n", frame_size);
-    read_buffer = new_read_buffer(frame_size, NTRACES);
+    printf("# traces       : %d\n", n_traces);
+    printf("colormap choice: %s\n", color_choice);
+
+    read_buffer = new_read_buffer(frame_size, n_traces);
 
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Raster1d");
     screen.width = GetScreenWidth();
     screen.height = GetScreenHeight();
-    Raster1d raster1d = new_raster1d(NTRACES, frame_size, &screen);
+    Raster1d raster1d = new_raster1d(n_traces, frame_size, &screen);
     screen.zoom_stack[0].logical_width = raster1d.trace_width;
     screen.zoom_stack[0].logical_minx = 0.0f;
     SetTargetFPS(60);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
+    //float* buffer = (float*)calloc(sizeof(float), n_traces * frame_size);
     float* buffer = (float*)calloc(sizeof(float), frame_size);
 
     Vector2 click_start = { 0, 0 };
@@ -223,19 +255,25 @@ int main(int argc, char *argv[])
             screen.height = GetScreenHeight();
 
             free_raster1d(&raster1d);
-            raster1d = new_raster1d(NTRACES, frame_size, &screen);
+            raster1d = new_raster1d(n_traces, frame_size, &screen);
             screen.zoom_stack[0].logical_width = raster1d.trace_width;
         }
 
         size_t nbytes = 0;
         pthread_mutex_lock(&read_buffer_mutex);
+        //read_all_frames_from_buffer(read_buffer, (char*)buffer, n_traces * frame_size * sizeof(float), &nbytes);
         read_all_frames_from_buffer(read_buffer, (char*)buffer, frame_size * sizeof(float), &nbytes);
         pthread_mutex_unlock(&read_buffer_mutex);
         size_t nframes = nbytes / (read_buffer->frame_size * read_buffer->bytes_per_element);
 
         // This also applies colormap
         if (nframes > 0) {
-            push_trace(buffer, &raster1d, &screen);
+            /* TODO: This is too slow...
+            for (size_t i = 0; i < nframes; i++) {
+                push_trace(&(buffer[i*frame_size]), &raster1d, &screen);
+            }
+            */
+            push_trace(buffer, &raster1d, &screen); // NOTE: Just pushing _1_ of our frames received per 16.666 ms for now...
             screen.zoom_stack[0].logical_miny = raster1d.min_value;
             screen.zoom_stack[0].logical_height = raster1d.max_value - raster1d.min_value;
         }
@@ -305,7 +343,7 @@ int main(int argc, char *argv[])
             }
         } else {
             // Actual raster1d
-            draw_raster1d(&raster1d);
+            draw_raster1d(&raster1d, colormap);
 
             // Draw tagged positions
             draw_tags(global_tags, ntags, &screen);
