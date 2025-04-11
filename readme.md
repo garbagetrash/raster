@@ -29,7 +29,7 @@ Examples
 ```sh
 $ scripts/gen_noise.py | ./plot
 $ scripts/gen_noise.py | ./raster1d
-$ scripts/gen_noise.py | ./waterfall -c viridis
+$ scripts/gen_noise.py 512 | ./waterfall -f 512 -c viridis
 ```
 
 TODO

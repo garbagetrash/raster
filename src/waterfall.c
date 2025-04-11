@@ -55,6 +55,8 @@ typedef struct {
 } ReadBuffer;
 
 ReadBuffer* read_buffer = NULL;
+const size_t N_FRAMES = 64;
+pthread_mutex_t read_buffer_mutex;
 
 ReadBuffer* new_read_buffer(uint32_t frame_size, uint64_t num_frames)
 {
@@ -81,6 +83,8 @@ void free_read_buffer(ReadBuffer* rb)
 
 void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
 {
+    pthread_mutex_lock(&read_buffer_mutex);
+
     // bytes until end of read buffer
     size_t read_buffer_size = rb->num_frames * rb->frame_size * rb->bytes_per_element;
     ssize_t bytes_left = rb->frame_size * (rb->num_frames - rb->write_cntr % rb->num_frames) * rb->bytes_per_element;
@@ -110,22 +114,34 @@ void write_to_buffer(const char* data, size_t nbytes, ReadBuffer* rb)
     rb->write_cntr += num_new_frames;
 
     // Force update read pointer if it's falling behind
-    if (rb->read_cntr < rb->write_cntr - rb->num_frames)
+    if (rb->write_cntr > rb->num_frames && rb->read_cntr < rb->write_cntr - rb->num_frames)
     {
         rb->read_cntr = rb->write_cntr - rb->num_frames;
     }
+
+    pthread_mutex_unlock(&read_buffer_mutex);
 }
 
 // Read all complete frames from buffer in one go
-void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t* nbytes)
+void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t output_capacity, size_t* nbytes)
 {
+    pthread_mutex_lock(&read_buffer_mutex);
     size_t nframes = rb->write_cntr - rb->read_cntr;
+    if (nframes > rb->num_frames) {
+        printf("write_cntr    : %lu\n", rb->write_cntr);
+        printf("read_cntr     : %lu\n", rb->read_cntr);
+        printf("nframes       : %lu\n", nframes);
+        printf("rb->num_frames: %lu\n", rb->num_frames);
+        fprintf(stderr, "shouldn't happen");
+        exit(-1);
+    }
     *nbytes = nframes * rb->frame_size * rb->bytes_per_element;
     if (nbytes > 0) {
         ssize_t fidx = rb->read_cntr % rb->num_frames;
         ssize_t bytes_left = (rb->num_frames - fidx) * rb->frame_size * rb->bytes_per_element;
-        if (bytes_left < *nbytes)
-        {
+        if (*nbytes >= output_capacity) {
+            memcpy(output, &(rb->buffer[*nbytes - output_capacity]), output_capacity);
+        } else if (bytes_left < *nbytes) {
             memcpy(output, (void*)&(rb->buffer[fidx * rb->frame_size * rb->bytes_per_element]), bytes_left);
             memcpy(&(output[bytes_left]), (void*)rb->buffer, *nbytes - bytes_left);
         } else {
@@ -134,6 +150,7 @@ void read_all_frames_from_buffer(ReadBuffer* rb, char* output, size_t* nbytes)
         }
         rb->read_cntr += nframes;
     }
+    pthread_mutex_unlock(&read_buffer_mutex);
 }
 
 void* spin_read()
@@ -274,7 +291,7 @@ int main(int argc, char *argv[])
     printf("frame size     : %d\n", frame_size);
     printf("colormap choice: %s\n", color_choice);
 
-    read_buffer = new_read_buffer(frame_size, 16);
+    read_buffer = new_read_buffer(frame_size, N_FRAMES);
 
     // Now set up our GUI
     InitWindow(screen.width, screen.height, "Waterfall");
@@ -284,10 +301,9 @@ int main(int argc, char *argv[])
     SetTargetFPS(60);
     Font font = LoadFont("resources/fonts/pixelplay.png");
 
-    float* buffer = (float*)calloc(sizeof(float), 16 * frame_size);
+    float* buffer = (float*)calloc(sizeof(float), N_FRAMES * frame_size);
 
     RenderTexture2D rtex = LoadRenderTexture(frame_size, screen.height);
-    Color* line_of_pixels = (Color*)calloc(sizeof(Color), waterfall.width);
     Vector2 click_start = { 0, 0 };
     Vector2 click_end = { 0, 0 };
     int last_mouse = 0; // 0 - not pressed, 1 - pressed
@@ -314,21 +330,17 @@ int main(int argc, char *argv[])
 
             rtex = LoadRenderTexture(frame_size, screen.height);
 
-            free(line_of_pixels);
-            line_of_pixels = (Color*)calloc(sizeof(Color), waterfall.width);
-
             free(buffer);
-            buffer = (float*)calloc(sizeof(float), 16 * frame_size);
+            buffer = (float*)calloc(sizeof(float), N_FRAMES * frame_size);
         }
 
         size_t nbytes = 0;
-        read_all_frames_from_buffer(read_buffer, (char*)buffer, &nbytes);
+        read_all_frames_from_buffer(read_buffer, (char*)buffer, N_FRAMES * frame_size * sizeof(float), &nbytes);
         size_t nframes = nbytes / (read_buffer->frame_size * read_buffer->bytes_per_element);
 
         for (size_t i = 0; i < nframes; i++)
         {
             // This also applies colormap
-            //printf("%f\n", buffer[i*read_buffer->frame_size]);
             push_line(&(buffer[i*read_buffer->frame_size]), &waterfall, colormap);
         }
 
@@ -456,7 +468,6 @@ int main(int argc, char *argv[])
         perror("pthread_join");
         return -1;
     }
-    free(line_of_pixels);
     free_waterfall(&waterfall);
     UnloadRenderTexture(rtex);
     CloseWindow();
